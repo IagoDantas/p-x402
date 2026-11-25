@@ -19,12 +19,15 @@
         "@p-x402/demo-server": "workspace:*",
         "@p-x402/facilitator": "workspace:*",
         "@p-x402/psp": "workspace:*",
+        "@p-x402/server": "workspace:*",
+        "hono": "4.13.22",
       },
     },
     "apps/demo-server": {
       "name": "@p-x402/demo-server",
       "version": "0.0.0",
       "dependencies": {
+        "@p-x402/core": "workspace:*",
         "@p-x402/server": "workspace:*",
         "hono": "4.13.22",
       },
