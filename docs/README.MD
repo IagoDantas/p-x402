@@ -45,7 +45,7 @@ sequenceDiagram
 4. O PSP do vendedor confirma o pagamento por webhook.
 5. O cliente repete a requisição com uma credencial que referencia o pagamento e recebe o recurso junto com um recibo.
 
-Para quem consome, é um `fetch` que entende 402. Para quem vende, é um plugin e um preço por rota.
+Para quem consome, é um `fetch` que entende 402. Para quem vende, é um middleware e um preço por rota.
 
 ## Como isso se encaixa no x402
 
@@ -95,69 +95,50 @@ Receber um Pix custa uma **tarifa fixa** nos PSPs com foco em desenvolvedor: R$ 
 Por isso o projeto tem duas etapas:
 
 - **Agora (MVP):** um Pix por chamada, ideal para recursos de valor mais alto (relatórios, documentos, consultas completas).
-- **Próxima etapa:** **crédito pré-pago**. Um Pix maior abre um saldo que paga muitas chamadas. A arquitetura já separa o core do PSP para isso entrar como um pacote novo sem mexer no resto.
+- **Próxima etapa:** **crédito pré-pago**. Um Pix maior abre um saldo que paga muitas chamadas. O Pix continua caindo direto na conta do vendedor, e o crédito só vale naquele vendedor: assim ninguém guarda saldo de terceiros. A arquitetura já separa o core do PSP para isso entrar como um pacote novo sem mexer no resto.
 
-## Arquitetura
+## Arquitetura e SDK
 
-Monorepo com **Bun workspaces**, em TypeScript.
-
-```
-p-x402/
-├── packages/
-│   ├── core/      # @p-x402/core   — protocolo puro: tipos x402 v2, headers, schemas, erros
-│   ├── psp/       # @p-x402/psp    — interface PixProvider + AbacatePay + mock em memória
-│   ├── elysia/    # @p-x402/elysia — plugin para o servidor que vende recursos
-│   └── client/    # @p-x402/client — fetch que trata 402 e paga
-├── apps/
-│   ├── facilitator/  # cria cobranças, recebe webhooks, faz verify/settle (Elysia + SQLite)
-│   ├── demo-server/  # API "paga" de exemplo
-│   └── demo-client/  # script que consome a API paga de ponta a ponta
-└── docs/
-```
+Os detalhes técnicos ficam no [README principal](../README.md): o passo a passo de uma compra com os headers decodificados, os pacotes TypeScript, os SDKs em várias linguagens, o layout do repositório e o roadmap. Em resumo:
 
 | Peça | Papel |
 | --- | --- |
-| **core** | Tipos `PaymentRequired`, `PaymentPayload` e `SettlementResponse`, mais o encode/decode dos headers `PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE` e `PAYMENT-RESPONSE`. Não depende de framework nem de PSP. |
-| **psp** | `createCharge`, `getCharge` e, em desenvolvimento, `simulatePayment`. |
-| **facilitator** | O único com a chave do PSP. Guarda as cobranças, valida o webhook e aplica as regras do `/settle`. |
-| **elysia** | Uma linha por rota para cobrar. |
-| **client** | Intercepta o 402, paga (QR no terminal ou pagamento simulado) e repete a chamada. |
+| **Facilitador** | Serviço HTTP implementado uma vez só, em TypeScript. Cria as cobranças, recebe os webhooks e aplica as regras do `/settle`. É o único que tem a chave do PSP. |
+| **SDK de quem vende** (`@p-x402/server`) | Protege rotas com 402 e Pix. Não conhece o PSP e não tem banco de dados. Adapters para Hono, Express, Elysia e Fastify. |
+| **SDK de quem compra** (`@p-x402/client`) | Um `fetch` que recebe o 402, aplica a política de gasto, paga e repete a chamada. |
+| **PSP** (`@p-x402/abacatepay`) | Implementa a interface `PixProvider`. O primeiro é o AbacatePay; outros entram pela mesma interface. |
 
-## Como executar
-
-> ⚠️ **Previsto.** Os comandos abaixo descrevem o fluxo planejado e vão ser atualizados conforme o código entrar no repositório.
-
-**Pré-requisito:** [Bun](https://bun.sh/) 1.x.
-
-```bash
-git clone https://github.com/IagoDantas/p-x402.git
-cd p-x402
-bun install
-cp .env.example .env     # sem chave nenhuma, tudo roda com o PSP mock
-bun run demo             # sobe facilitador + demo-server e executa o demo-client
-bun test                 # testes unitários e ponta a ponta com o mock
-```
-
-Para usar o **AbacatePay em Modo Teste**, preencha `ABACATEPAY_API_KEY` (chave `abc_dev_…`) e `WEBHOOK_SECRET` no `.env`. No Modo Teste, o pagamento é feito pela própria API de simulação do AbacatePay, sem dinheiro real.
+Stack: Bun, Hono, Zod v4 e Biome.
 
 ## Exemplo de uso
 
-**Quem vende:**
+> Planejado. Os nomes seguem o [README principal](../README.md#uso-planejado).
+
+**Quem vende (Hono):**
 
 ```ts
-new Elysia()
-  .use(x402Pix({ facilitatorUrl, payTo: "merchant_123" }))
-  .get("/relatorio", () => gerarPdf(), {
-    x402: { amount: 500, description: "Relatório" }, // R$ 5,00
-  });
+import { pixPaywall } from "@p-x402/server/hono"
+
+const pix = pixPaywall({ facilitator: "https://facilitator.exemplo.com", token: process.env.PIX402_TOKEN })
+
+app.get("/relatorio", pix({ amount: 500, description: "Relatório PDF" }), (c) => c.json(gerar())) // R$ 5,00
 ```
 
 **Quem compra (pessoa ou agente):**
 
 ```ts
-const pagoFetch = wrapPixFetch(fetch, { payer: terminalPayer() }); // ou simulatePayer() em dev
-const res = await pagoFetch("http://localhost:3000/relatorio");
+import { wrapFetch } from "@p-x402/client"
+import { terminalPayer } from "@p-x402/client/terminal"
+
+const fetchPago = wrapFetch(fetch, {
+  payer: terminalPayer(),                          // ou simulatePayer() em dev
+  policy: { maxPerRequest: 1000, maxTotal: 5000 }, // teto de R$ 10,00 por chamada
+})
+
+const res = await fetchPago("https://api.exemplo.com.br/relatorio")
 ```
+
+**Como executar:** os comandos vão ficar no [README principal](../README.md) quando o código entrar no repositório. Tudo vai rodar sem chave nenhuma, com um PSP mock, ou com o AbacatePay em Modo Teste, que simula o pagamento sem dinheiro real.
 
 ## Escopo do hackathon
 

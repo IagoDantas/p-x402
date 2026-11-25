@@ -415,20 +415,21 @@
     <div class="duo">
       <div class="card rv">
         <h3>Para quem vende</h3>
-        <p>Um plugin e um preço por rota. Sem cadastro, planos ou chaves.</p>
-<pre><span class="f">new</span> Elysia()
-  .use(<span class="f">x402Pix</span>({ facilitatorUrl, payTo }))
-  .get(<span class="s">"/relatorio"</span>, gerarPdf, {
-    x402: { amount: <span class="s">500</span> } <span class="c">// R$ 5,00</span>
-  })</pre>
+        <p>Um middleware e um preço por rota. Sem cadastro, planos ou chaves.</p>
+<pre><span class="f">const</span> pix = <span class="f">pixPaywall</span>({ facilitator, token })
+
+app.get(<span class="s">"/relatorio"</span>,
+  <span class="f">pix</span>({ amount: <span class="s">500</span> }), <span class="c">// R$ 5,00</span>
+  (c) =&gt; c.json(<span class="f">gerar</span>()))</pre>
       </div>
       <div class="card rv d1">
         <h3>Para quem compra</h3>
         <p>Um <code>fetch</code> que entende 402, respeita um teto de gasto e paga em reais.</p>
-<pre><span class="f">const</span> pagoFetch = <span class="f">wrapPixFetch</span>(fetch, {
-  payer: <span class="f">terminalPayer</span>()
+<pre><span class="f">const</span> fetchPago = <span class="f">wrapFetch</span>(fetch, {
+  payer: <span class="f">terminalPayer</span>(),
+  policy: { maxPerRequest: <span class="s">1000</span> } <span class="c">// teto R$ 10</span>
 })
-<span class="f">await</span> pagoFetch(<span class="s">"…/relatorio"</span>) <span class="c">// 402 → Pix → 200</span></pre>
+<span class="f">await</span> fetchPago(<span class="s">"…/relatorio"</span>) <span class="c">// 402 → Pix → 200</span></pre>
       </div>
     </div>
     <p class="rv" style="margin:22px 0 0;color:var(--muted);font-size:14px;text-align:center">TypeScript hoje. Python, Java e PHP a partir da mesma spec aberta.</p>
