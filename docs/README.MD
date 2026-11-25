@@ -164,11 +164,11 @@ const res = await fetchPago("https://api.exemplo.com.br/relatorio")
 
 ## Time
 
-| Nome | Papel |
-| --- | --- |
-| _a preencher_ | |
-| _a preencher_ | |
-| _a preencher_ | |
+- Iago Dantas
+- Rafael Marcondes
+- Henrique Sanches
+
+Todo mundo trabalha um pouco em tudo.
 
 ## Licença
 

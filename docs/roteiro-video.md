@@ -11,11 +11,11 @@ Formato sugerido: tela compartilhada com a página e a webcam no canto (Loom ou 
 | 0:55–1:40 | 3 · `#como` | Integrante 2 | "O p-x402 segue o padrão aberto x402. São quatro passos: pede, recebe um 402 com um Pix, paga, recebe o recurso com recibo. Quem vende põe um middleware e um preço na rota. Quem compra usa um fetch que entende 402. E como o protocolo é uma spec aberta, o SDK de qualquer linguagem sai dela: começamos pelo TypeScript." |
 | 1:40–2:10 | 4 · `#conta` | Integrante 2 ou 3 | "Por que não um Pix por chamada? A tarifa do Pix é fixa. Numa chamada de cinco centavos, é impossível. A saída é crédito pré-pago: com um depósito de vinte reais, a tarifa cai para 4%. É a nossa próxima etapa." |
 | 2:10–2:40 | 5 · `#seguranca` | Integrante 3 | "Segurança: o mesmo Pix nunca paga duas vezes, valor e recurso ficam amarrados ao pagamento e tudo é reconfirmado no PSP. E o mais importante: o dinheiro nunca passa pela gente, ele cai direto na conta do vendedor." |
-| 2:40–3:00 | 6 · `#time` | Todos | Cada um diz o nome e o papel. Fecho: "p-x402: o 402 com Pix, para agentes pagarem APIs brasileiras em reais." |
+| 2:40–3:00 | 6 · `#time` | Todos | Cada um diz o nome. Fecho: "p-x402: o 402 com Pix, para agentes pagarem APIs brasileiras em reais." |
 
 ## Checklist antes de gravar
 
-- [ ] Nomes e papéis preenchidos na seção `#time` da página
+- [x] Nomes preenchidos na seção `#time` da página
 - [ ] Página publicada em HTTPS (GitHub Pages)
 - [ ] Cada integrante aparece na câmera
 - [ ] Vídeo público ou não listado (privado não vale)
