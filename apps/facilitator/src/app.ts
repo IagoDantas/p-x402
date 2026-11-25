@@ -49,6 +49,8 @@ export interface FacilitatorOptions {
 }
 
 const BEARER = /^Bearer[ \t]+(\S+)[ \t]*$/i
+/** Format of the Idempotency-Key header on POST /settle. */
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{1,128}$/
 
 function validateMerchants(merchants: FacilitatorMerchant[]) {
   if (merchants.length === 0) throw new Error("facilitator: at least one merchant is required")
@@ -162,6 +164,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       merchant,
       now,
       paidGraceMs,
+      chargeTtlSeconds: chargeTtl,
       observe: (id) => observe(id, useCache),
     }
   }
@@ -243,8 +246,8 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
         provider: provider.name,
         resourceUrl: request.resource.url,
         chargeId: charge.id,
+        // brCodeBase64 stays out: it would bloat the PAYMENT-REQUIRED header; clients render brCode.
         brCode: charge.brCode,
-        ...(charge.brCodeBase64 === undefined ? {} : { brCodeBase64: charge.brCodeBase64 }),
         expiresAt: charge.expiresAt,
       },
     })
@@ -267,10 +270,17 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       disputedAt: null,
       refundedAt: null,
       consumedAt: null,
+      consumedKey: null,
     }
     if (description !== undefined) record.description = description
     if (charge.brCodeBase64 !== undefined) record.brCodeBase64 = charge.brCodeBase64
-    await store.insert(record)
+    try {
+      await store.insert(record)
+    } catch (error) {
+      // The PSP charge exists but we cannot track it; nobody will be asked to pay it.
+      console.error("facilitator: storing charge failed", charge.id, error)
+      return c.json({ error: "psp_error" }, 502)
+    }
     return c.json({ paymentRequirements: built.data })
   })
 
@@ -301,10 +311,29 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       }
       return c.json(body, status)
     }
+    const success = (chargeId: string, amount: string) => {
+      const body: SettlementResponse = {
+        success: true,
+        transaction: chargeId,
+        network: PIX_NETWORK,
+        amount,
+      }
+      return c.json(body)
+    }
+    const key = c.req.header("idempotency-key")
+    if (key !== undefined && !IDEMPOTENCY_KEY.test(key)) return failure("invalid_request", "", 400)
     const json = await readJson(c)
     if (!json.ok) return failure("invalid_payload", "", 400)
 
     const result = await runChecks(checkContext(merchant, false), json.value)
+
+    // A retry of the settle that consumed the charge gets the same success again. runChecks only
+    // reports charge_already_consumed after the merchant and requirements matched the record.
+    const isReplay = (record: ChargeRecord | undefined) =>
+      key !== undefined &&
+      record !== undefined &&
+      record.consumedAt !== null &&
+      record.consumedKey === key
 
     // Record what the PSP said, whatever the verdict.
     const observation = result.observation
@@ -312,17 +341,19 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       await applyState(result.record.id, observation.state)
     }
 
-    if (!result.ok) return failure(result.reason, result.chargeId, result.status)
-    if (!(await store.consume(result.chargeId, now()))) {
+    if (!result.ok) {
+      if (result.reason === "charge_already_consumed" && result.record && isReplay(result.record)) {
+        return success(result.chargeId, result.record.amount)
+      }
+      return failure(result.reason, result.chargeId, result.status)
+    }
+    if (!(await store.consume(result.chargeId, now(), key))) {
+      // Lost the race; it may have been to an earlier attempt with this same key.
+      const current = await store.get(result.chargeId)
+      if (isReplay(current)) return success(result.chargeId, result.record.amount)
       return failure("charge_already_consumed", result.chargeId)
     }
-    const body: SettlementResponse = {
-      success: true,
-      transaction: result.chargeId,
-      network: PIX_NETWORK,
-      amount: result.record.amount,
-    }
-    return c.json(body)
+    return success(result.chargeId, result.record.amount)
   })
 
   app.post("/webhooks/pix", limit, async (c) => {
@@ -340,19 +371,29 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       return c.json({ ok: true, duplicate: true })
     }
     if (event.chargeId === undefined) return c.json({ ok: true, ignored: true })
-    const record = await store.get(event.chargeId)
-    if (!record) return c.json({ ok: true, ignored: true })
-
-    // The event is only a hint: ask the PSP with a fresh call.
-    forget(record.id)
-    let state: PixChargeState
+    const chargeId = event.chargeId
     try {
-      state = await observe(record.id, false)
-    } catch {
-      return c.json({ ok: true, applied: false })
+      const record = await store.get(chargeId)
+      if (!record) return c.json({ ok: true, ignored: true })
+      // The event is only a hint: ask the PSP with a fresh call.
+      forget(record.id)
+      const state = await observe(record.id, false)
+      await applyState(record.id, state)
+      return c.json({ ok: true, applied: true })
+    } catch (error) {
+      // Unrecord the envelope so the PSP's redelivery is processed instead of dropped as a duplicate.
+      console.error(
+        "facilitator: webhook processing failed",
+        event.id,
+        isPx402Error(error) ? error.code : error,
+      )
+      try {
+        await store.forgetWebhookEvent(event.id)
+      } catch (forgetError) {
+        console.error("facilitator: forgetWebhookEvent failed", event.id, forgetError)
+      }
+      return c.json({ error: "webhook_retry" }, 503)
     }
-    await applyState(record.id, state)
-    return c.json({ ok: true, applied: true })
   })
 
   app.post("/dev/charges/:id/simulate-payment", async (c) => {

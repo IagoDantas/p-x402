@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import type { ChargeRecord, ChargeStore } from "../store"
+import { type ChargeRecord, type ChargeStore, WEBHOOK_EVENT_RETENTION_MS } from "../store"
 
 interface Row {
   id: string
@@ -17,6 +17,7 @@ interface Row {
   disputed_at: number | null
   refunded_at: number | null
   consumed_at: number | null
+  consumed_key: string | null
 }
 
 const SCHEMA = `
@@ -35,12 +36,14 @@ CREATE TABLE IF NOT EXISTS charges (
   paid_at INTEGER,
   disputed_at INTEGER,
   refunded_at INTEGER,
-  consumed_at INTEGER
+  consumed_at INTEGER,
+  consumed_key TEXT
 );
 CREATE TABLE IF NOT EXISTS webhook_events (
   id TEXT PRIMARY KEY,
   received_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS webhook_events_received_at ON webhook_events (received_at);
 `
 
 function toRecord(row: Row): ChargeRecord {
@@ -58,6 +61,7 @@ function toRecord(row: Row): ChargeRecord {
     disputedAt: row.disputed_at,
     refundedAt: row.refunded_at,
     consumedAt: row.consumed_at,
+    consumedKey: row.consumed_key,
   }
   if (row.description !== null) record.description = row.description
   if (row.br_code_base64 !== null) record.brCodeBase64 = row.br_code_base64
@@ -73,9 +77,11 @@ export function bunSqliteStore(path: string): ChargeStore {
 
   const insert = db.query(
     `INSERT INTO charges (id, merchant_id, pay_to, amount, resource_url, description, provider, br_code,
-       br_code_base64, expires_at, created_at, paid_at, disputed_at, refunded_at, consumed_at)
+       br_code_base64, expires_at, created_at, paid_at, disputed_at, refunded_at, consumed_at,
+       consumed_key)
      VALUES ($id, $merchantId, $payTo, $amount, $resourceUrl, $description, $provider, $brCode,
-       $brCodeBase64, $expiresAt, $createdAt, $paidAt, $disputedAt, $refundedAt, $consumedAt)`,
+       $brCodeBase64, $expiresAt, $createdAt, $paidAt, $disputedAt, $refundedAt, $consumedAt,
+       $consumedKey)`,
   )
   const select = db.query<Row, { id: string }>("SELECT * FROM charges WHERE id = $id")
   const setOnce = (column: string) =>
@@ -83,8 +89,12 @@ export function bunSqliteStore(path: string): ChargeStore {
   const paid = setOnce("paid_at")
   const disputed = setOnce("disputed_at")
   const refunded = setOnce("refunded_at")
-  const consumed = setOnce("consumed_at")
+  const consumed = db.query(
+    "UPDATE charges SET consumed_at = $at, consumed_key = $key WHERE id = $id AND consumed_at IS NULL",
+  )
   const event = db.query("INSERT OR IGNORE INTO webhook_events (id, received_at) VALUES ($id, $at)")
+  const pruneEvents = db.query("DELETE FROM webhook_events WHERE received_at < $cutoff")
+  const forgetEvent = db.query("DELETE FROM webhook_events WHERE id = $id")
 
   return {
     async insert(r) {
@@ -104,6 +114,7 @@ export function bunSqliteStore(path: string): ChargeStore {
         disputedAt: r.disputedAt,
         refundedAt: r.refundedAt,
         consumedAt: r.consumedAt,
+        consumedKey: r.consumedKey,
       })
     },
     async get(id) {
@@ -119,11 +130,16 @@ export function bunSqliteStore(path: string): ChargeStore {
     async markRefunded(id, at) {
       refunded.run({ id, at })
     },
-    async consume(id, at) {
-      return consumed.run({ id, at }).changes === 1
+    async consume(id, at, key) {
+      return consumed.run({ id, at, key: key ?? null }).changes === 1
     },
     async recordWebhookEvent(eventId, at) {
+      // Prune first so an id past retention is recorded as new.
+      pruneEvents.run({ cutoff: at - WEBHOOK_EVENT_RETENTION_MS })
       return event.run({ id: eventId, at }).changes === 1
+    },
+    async forgetWebhookEvent(eventId) {
+      forgetEvent.run({ id: eventId })
     },
   }
 }

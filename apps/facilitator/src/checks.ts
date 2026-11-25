@@ -31,6 +31,8 @@ export interface CheckContext {
   merchant: FacilitatorMerchant
   now: () => number
   paidGraceMs: number
+  /** Effective charge lifetime; requirements must carry it as maxTimeoutSeconds. */
+  chargeTtlSeconds: number
   /** Asks the PSP for the charge state (coalesced by the caller). */
   observe: (chargeId: string) => Promise<PixChargeState>
 }
@@ -165,7 +167,8 @@ export async function runChecks(ctx: CheckContext, body: unknown): Promise<Check
   if (
     record.provider !== requirements.extra.provider ||
     record.brCode !== requirements.extra.brCode ||
-    record.expiresAt !== requirements.extra.expiresAt
+    record.expiresAt !== requirements.extra.expiresAt ||
+    requirements.maxTimeoutSeconds !== ctx.chargeTtlSeconds
   ) {
     return fail("requirements_mismatch", chargeId)
   }

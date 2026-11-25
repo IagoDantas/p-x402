@@ -36,7 +36,10 @@ function main() {
       ...(webhookSecret ? { webhookSecret } : {}),
     })
   } else if (providerName === "mock") {
-    const mock = createMockPixProvider()
+    // A per-process prefix keeps charge ids unique across restarts when PX402_DB_PATH persists them.
+    const mock = createMockPixProvider({
+      idPrefix: `pix_char_mock_${crypto.randomUUID().slice(0, 8)}_`,
+    })
     // Simulated payments deliver their webhook straight to this app.
     onReady = (fetch) => mock.setWebhookSink(fetch)
     provider = mock

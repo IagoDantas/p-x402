@@ -6,7 +6,7 @@ import {
   SupportedResponseSchema,
   type VerifyResponse,
 } from "@p-x402/core"
-import { createMockPixProvider, type PixProvider } from "@p-x402/psp"
+import { createMockPixProvider, type MockPixProvider, type PixProvider } from "@p-x402/psp"
 import { createFacilitator, type FacilitatorOptions } from "../src/app"
 import type { ChargeStore } from "../src/store"
 import { bunSqliteStore } from "../src/stores/bun-sqlite"
@@ -50,8 +50,13 @@ function setup(
   })
   const fetch = async (request: Request) => app.fetch(request)
 
-  async function post(path: string, body: unknown, token: string | null = "tok-loja1") {
-    const headers: Record<string, string> = { "content-type": "application/json" }
+  async function post(
+    path: string,
+    body: unknown,
+    token: string | null = "tok-loja1",
+    extraHeaders: Record<string, string> = {},
+  ) {
+    const headers: Record<string, string> = { "content-type": "application/json", ...extraHeaders }
     if (token !== null) headers.authorization = `Bearer ${token}`
     return app.request(path, {
       method: "POST",
@@ -84,8 +89,10 @@ function setup(
     return { status: res.status, json: (await res.json()) as VerifyResponse }
   }
 
-  async function settle(b: unknown, token = "tok-loja1") {
-    const res = await post("/settle", b, token)
+  async function settle(b: unknown, token = "tok-loja1", idempotencyKey?: string) {
+    const headers: Record<string, string> =
+      idempotencyKey === undefined ? {} : { "idempotency-key": idempotencyKey }
+    const res = await post("/settle", b, token, headers)
     return { status: res.status, json: (await res.json()) as SettlementResponse }
   }
 
@@ -103,6 +110,19 @@ function setup(
       t += ms
     },
     now,
+  }
+}
+
+/** A provider that delegates to `mock` except for the given overrides. */
+function wrapProvider(mock: MockPixProvider, overrides: Partial<PixProvider>): PixProvider {
+  return {
+    name: mock.name,
+    minAmount: mock.minAmount,
+    minExpiresIn: mock.minExpiresIn,
+    createCharge: mock.createCharge,
+    getCharge: mock.getCharge,
+    parseWebhook: mock.parseWebhook,
+    ...overrides,
   }
 }
 
@@ -181,6 +201,57 @@ for (const [storeName, makeStore] of backends) {
       expect(req.maxTimeoutSeconds).toBe(300)
       const g = setup(makeStore, { chargeTtlSeconds: 600 })
       expect((await g.charge()).maxTimeoutSeconds).toBe(600)
+    })
+
+    test("chargeTtlSeconds 600: requirements carrying 600 verify and settle", async () => {
+      const f = setup(makeStore, { chargeTtlSeconds: 600 })
+      const req = await f.charge()
+      expect(req.maxTimeoutSeconds).toBe(600)
+      await f.mock.simulatePayment(req.extra.chargeId)
+      expect((await f.verify(f.body(req))).json).toEqual({ isValid: true })
+      expect((await f.settle(f.body(req))).json.success).toBe(true)
+    })
+
+    test("maxTimeoutSeconds other than the charge TTL → requirements_mismatch", async () => {
+      const f = setup(makeStore, { chargeTtlSeconds: 600 })
+      const req = await f.charge()
+      await f.mock.simulatePayment(req.extra.chargeId)
+      const b = f.body(req)
+      b.paymentPayload.accepted.maxTimeoutSeconds = 300
+      b.paymentRequirements.maxTimeoutSeconds = 300
+      expect((await f.verify(b)).json.invalidReason).toBe("requirements_mismatch")
+      expect((await f.settle(b)).json.errorReason).toBe("requirements_mismatch")
+      expect((await f.store.get(req.extra.chargeId))?.consumedAt).toBeNull()
+    })
+
+    test("POST /pix/charges leaves brCodeBase64 out of the requirements", async () => {
+      const mock = createMockPixProvider({ now: () => T0 })
+      const withQr = wrapProvider(mock, {
+        async createCharge(input) {
+          return { ...(await mock.createCharge(input)), brCodeBase64: "data:image/png;base64,AAAA" }
+        },
+      })
+      const f = setup(makeStore, { provider: withQr })
+      const res = await f.post("/pix/charges", { resource: { url: RESOURCE }, amount: "500" })
+      expect(res.status).toBe(200)
+      const json = (await res.json()) as { paymentRequirements: PixPaymentRequirements }
+      expect(json.paymentRequirements.extra).not.toHaveProperty("brCodeBase64")
+      expect(JSON.stringify(json)).not.toContain("base64")
+    })
+
+    test("store.insert failure after the PSP charge → 502 psp_error", async () => {
+      const inner = makeStore()
+      const store: ChargeStore = {
+        ...inner,
+        async insert() {
+          throw new Error("disk full")
+        },
+      }
+      const f = setup(() => store)
+      const res = await f.post("/pix/charges", { resource: { url: RESOURCE }, amount: "500" })
+      expect(res.status).toBe(502)
+      expect(await res.json()).toEqual({ error: "psp_error" })
+      expect(f.mock.calls.createCharge).toBe(1)
     })
 
     test("POST /pix/charges validation errors are 400 and never reach the PSP", async () => {
@@ -335,13 +406,167 @@ for (const [storeName, makeStore] of backends) {
       expect(f.mock.calls.getCharge).toBe(calls)
     })
 
-    test("two concurrent /settle on one paid charge → exactly one success", async () => {
-      const f = setup(makeStore)
+    /**
+     * Every request reads the unconsumed record before any PSP answer is released, so all of them
+     * reach consume(). The PSP call is coalesced, so the gate opens once all N have read the record
+     * (and getCharge was entered), not after N getCharge calls.
+     */
+    function racingSetup(n: number) {
+      const mock = createMockPixProvider({ now: () => T0 })
+      const inner = makeStore()
+      let armed = false
+      let reads = 0
+      let entered = 0
+      let open: () => void = () => {}
+      const gate = new Promise<void>((resolve) => {
+        open = resolve
+      })
+      const store: ChargeStore = {
+        ...inner,
+        async get(id) {
+          const record = await inner.get(id)
+          if (armed && ++reads === n) open()
+          return record
+        },
+      }
+      const provider = wrapProvider(mock, {
+        async getCharge(id) {
+          const state = await mock.getCharge(id)
+          if (armed) {
+            entered++
+            await gate
+          }
+          return state
+        },
+      })
+      const f = setup(() => store, { provider })
+      return {
+        f,
+        mock,
+        arm: () => {
+          armed = true
+        },
+        stats: () => ({ reads, entered }),
+      }
+    }
+
+    test("N concurrent /settle racing past the checks → exactly one success", async () => {
+      const n = 5
+      const { f, mock, arm, stats } = racingSetup(n)
       const req = await f.charge()
-      await f.mock.simulatePayment(req.extra.chargeId)
-      const results = await Promise.all([f.settle(f.body(req)), f.settle(f.body(req))])
+      await mock.simulatePayment(req.extra.chargeId)
+      arm()
+      const results = await Promise.all(
+        Array.from({ length: n }, (_, i) => f.settle(f.body(req), "tok-loja1", `key-${i}`)),
+      )
+      expect(stats().reads).toBeGreaterThanOrEqual(n)
+      expect(stats().entered).toBeGreaterThanOrEqual(1)
       const reasons = results.map((r) => r.json.errorReason ?? "ok").sort()
-      expect(reasons).toEqual(["charge_already_consumed", "ok"])
+      expect(reasons).toEqual([...Array(n - 1).fill("charge_already_consumed"), "ok"])
+      const winner = results.findIndex((r) => r.json.success)
+      expect((await f.store.get(req.extra.chargeId))?.consumedKey).toBe(`key-${winner}`)
+    })
+
+    test("concurrent /settle retries with one Idempotency-Key all get the same success", async () => {
+      const n = 3
+      const { f, mock, arm } = racingSetup(n)
+      const req = await f.charge()
+      await mock.simulatePayment(req.extra.chargeId)
+      arm()
+      const results = await Promise.all(
+        Array.from({ length: n }, () => f.settle(f.body(req), "tok-loja1", "same-key")),
+      )
+      for (const r of results) {
+        expect(r.json).toEqual({
+          success: true,
+          transaction: req.extra.chargeId,
+          network: "pix:br",
+          amount: "500",
+        })
+      }
+    })
+
+    describe("settle idempotency", () => {
+      test("same key replays the same success; other key or no key → consumed", async () => {
+        const f = setup(makeStore)
+        const req = await f.charge()
+        await f.mock.simulatePayment(req.extra.chargeId)
+        const first = await f.settle(f.body(req), "tok-loja1", "abc-123_XYZ")
+        const expected = {
+          success: true,
+          transaction: req.extra.chargeId,
+          network: "pix:br",
+          amount: "500",
+        }
+        expect(first).toEqual({ status: 200, json: expected })
+        expect((await f.store.get(req.extra.chargeId))?.consumedKey).toBe("abc-123_XYZ")
+        const calls = f.mock.calls.getCharge
+        f.advance(60_000)
+        expect(await f.settle(f.body(req), "tok-loja1", "abc-123_XYZ")).toEqual({
+          status: 200,
+          json: expected,
+        })
+        // the replay does not ask the PSP or move consumedAt
+        expect(f.mock.calls.getCharge).toBe(calls)
+        expect((await f.store.get(req.extra.chargeId))?.consumedAt).toBe(T0)
+
+        const consumed = {
+          success: false,
+          errorReason: "charge_already_consumed",
+          transaction: req.extra.chargeId,
+          network: "pix:br",
+        }
+        expect((await f.settle(f.body(req), "tok-loja1", "other-key")).json).toEqual(consumed)
+        expect((await f.settle(f.body(req))).json).toEqual(consumed)
+        // /verify is unaffected
+        expect((await f.verify(f.body(req))).json.invalidReason).toBe("charge_already_consumed")
+      })
+
+      test("same key from another merchant or with other requirements is not a replay", async () => {
+        const f = setup(makeStore)
+        const req = await f.charge()
+        await f.mock.simulatePayment(req.extra.chargeId)
+        expect((await f.settle(f.body(req), "tok-loja1", "k1")).json.success).toBe(true)
+        expect((await f.settle(f.body(req), "tok-loja2", "k1")).json.errorReason).toBe(
+          "merchant_mismatch",
+        )
+        const b = f.body(req)
+        b.paymentPayload.accepted.extra.resourceUrl = "https://api.example/other"
+        b.paymentRequirements.extra.resourceUrl = "https://api.example/other"
+        expect((await f.settle(b, "tok-loja1", "k1")).json.errorReason).toBe("resource_mismatch")
+      })
+
+      test("a key cannot claim a charge consumed without one", async () => {
+        const f = setup(makeStore)
+        const req = await f.charge()
+        await f.mock.simulatePayment(req.extra.chargeId)
+        expect((await f.settle(f.body(req))).json.success).toBe(true)
+        expect((await f.store.get(req.extra.chargeId))?.consumedKey).toBeNull()
+        expect((await f.settle(f.body(req), "tok-loja1", "late-key")).json.errorReason).toBe(
+          "charge_already_consumed",
+        )
+      })
+
+      test("malformed Idempotency-Key → 400 invalid_request, nothing consumed", async () => {
+        const f = setup(makeStore)
+        const req = await f.charge()
+        await f.mock.simulatePayment(req.extra.chargeId)
+        for (const key of ["", "has space", "a/b", "a.b", "x".repeat(129)]) {
+          expect(await f.settle(f.body(req), "tok-loja1", key)).toEqual({
+            status: 400,
+            json: {
+              success: false,
+              errorReason: "invalid_request",
+              transaction: "",
+              network: "pix:br",
+            },
+          })
+        }
+        expect((await f.store.get(req.extra.chargeId))?.consumedAt).toBeNull()
+        const longest = "k".repeat(128)
+        expect((await f.settle(f.body(req), "tok-loja1", longest)).json.success).toBe(true)
+        expect((await f.store.get(req.extra.chargeId))?.consumedKey).toBe(longest)
+      })
     })
 
     describe("mismatches", () => {
@@ -547,6 +772,40 @@ for (const [storeName, makeStore] of backends) {
       expect(f.mock.calls.getCharge).toBe(calls)
     })
 
+    test("PSP UNDER_DISPUTE with no webhook → charge_disputed and recorded by settle", async () => {
+      const f = setup(makeStore)
+      const req = await f.charge()
+      await f.mock.simulatePayment(req.extra.chargeId)
+      await f.mock.simulateDispute(req.extra.chargeId)
+      expect((await f.verify(f.body(req))).json.invalidReason).toBe("charge_disputed")
+      expect((await f.store.get(req.extra.chargeId))?.disputedAt).toBeNull()
+      f.advance(1_000)
+      expect((await f.settle(f.body(req))).json.errorReason).toBe("charge_disputed")
+      const record = await f.store.get(req.extra.chargeId)
+      expect(record?.disputedAt).toBe(T0 + 1_000)
+      expect(record?.consumedAt).toBeNull()
+      expect((await f.settle(f.body(req))).json.errorReason).toBe("charge_disputed")
+    })
+
+    for (const status of ["PENDING", "UNKNOWN"] as const) {
+      test(`PSP stuck at ${status} past expiresAt → charge_expired`, async () => {
+        const mock = createMockPixProvider({ now: () => T0 })
+        const stuck = wrapProvider(mock, {
+          async getCharge(id) {
+            return { ...(await mock.getCharge(id)), status }
+          },
+        })
+        const f = setup(makeStore, { provider: stuck })
+        const req = await f.charge()
+        await mock.simulatePayment(req.extra.chargeId)
+        expect((await f.verify(f.body(req))).json.invalidReason).toBe("settlement_pending")
+        f.advance(300_001)
+        expect((await f.verify(f.body(req))).json.invalidReason).toBe("charge_expired")
+        expect((await f.settle(f.body(req))).json.errorReason).toBe("charge_expired")
+        expect((await f.store.get(req.extra.chargeId))?.consumedAt).toBeNull()
+      })
+    }
+
     test("refunded at the PSP → charge_refunded and recorded by settle", async () => {
       const f = setup(makeStore)
       const req = await f.charge()
@@ -602,14 +861,48 @@ for (const [storeName, makeStore] of backends) {
         expect(await res.json()).toEqual({ ok: true, ignored: true })
       })
 
-      test("PSP error during a webhook applies nothing and returns 200", async () => {
+      test("PSP error during a webhook → 503, and the redelivery is processed", async () => {
         const f = setup(makeStore)
         const req = await f.charge()
-        await f.mock.simulatePayment(req.extra.chargeId)
+        const id = req.extra.chargeId
+        await f.mock.simulatePayment(id)
         f.mock.failNextGetCharge(1)
-        const res = await f.fetch(f.mock.webhookRequest("paid", req.extra.chargeId))
-        expect(await res.json()).toEqual({ ok: true, applied: false })
-        expect((await f.store.get(req.extra.chargeId))?.paidAt).toBeNull()
+        const res = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }))
+        expect(res.status).toBe(503)
+        expect((await f.store.get(id))?.paidAt).toBeNull()
+        f.advance(2_000)
+        const again = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }))
+        expect(again.status).toBe(200)
+        expect(await again.json()).toEqual({ ok: true, applied: true })
+        expect((await f.store.get(id))?.paidAt).toBe(T0)
+        // and now it is a duplicate
+        const third = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }))
+        expect(await third.json()).toEqual({ ok: true, duplicate: true })
+      })
+
+      test("store failure during a webhook → 503, and the redelivery is processed", async () => {
+        const inner = makeStore()
+        let failGet = false
+        const store: ChargeStore = {
+          ...inner,
+          async get(id) {
+            if (failGet) {
+              failGet = false
+              throw new Error("db locked")
+            }
+            return inner.get(id)
+          },
+        }
+        const f = setup(() => store)
+        const req = await f.charge()
+        const id = req.extra.chargeId
+        await f.mock.simulatePayment(id)
+        failGet = true
+        const res = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_db" }))
+        expect(res.status).toBe(503)
+        const again = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_db" }))
+        expect(await again.json()).toEqual({ ok: true, applied: true })
+        expect((await f.store.get(id))?.paidAt).toBe(T0)
       })
 
       test("wrong or empty secret → 401", async () => {
