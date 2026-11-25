@@ -69,6 +69,7 @@ O [x402](https://www.x402.org/) é o protocolo aberto de pagamentos sobre HTTP 4
 - **PSP trocável.** O AbacatePay fica isolado atrás de uma interface (`PixProvider`). Existe um PSP em memória (mock) para desenvolver e testar sem chave nenhuma.
 - **O webhook sozinho não basta.** Antes de liberar o recurso, o facilitador reconfirma o pagamento direto no PSP.
 - **Nenhum dado pessoal por padrão.** O servidor não recebe o CPF do pagador.
+- **Uma spec, qualquer linguagem.** O facilitador é implementado uma vez só. Os SDKs são finos: tipos, headers e cliente do facilitador saem de uma especificação aberta (JSON Schema + OpenAPI), e test-vectors de conformidade garantem que todos falam o mesmo protocolo.
 
 ### Regras do `/settle`
 
@@ -165,8 +166,11 @@ const res = await pagoFetch("http://localhost:3000/relatorio");
 - Facilitador com AbacatePay em Modo Teste e com PSP mock.
 - Regras de segurança do `/settle`: anti-replay, valor e recurso amarrados ao pagamento, reconfirmação no PSP, disputa.
 - Demo de ponta a ponta e testes automatizados.
+- Especificação do protocolo e SDK de referência em TypeScript.
 
 **Fora, por enquanto:**
+- SDKs em outras linguagens, gerados da mesma spec. Ordem prevista: Python (ecossistema de agentes de IA), Java (bancos e fintechs), PHP (e-commerce brasileiro), depois Go e C#.
+- Facilitador hospedado como serviço. No MVP, o vendedor roda o próprio facilitador.
 - Pagamento automático real a partir da conta do agente. Hoje nenhum PSP permite testar isso em sandbox, então na demo o pagamento é **simulado**, e isso fica dito explicitamente.
 - Crédito pré-pago, Pix Automático e devolução parcial.
 - Múltiplos PSPs em produção e emissão de nota fiscal.
