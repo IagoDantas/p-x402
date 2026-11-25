@@ -30,6 +30,11 @@ describe("simulatePayer", () => {
     ])
   })
 
+  test("both variants declare that they never pay the BR Code", () => {
+    expect(simulatePayer({ facilitatorUrl: "http://f.test" }).paysBrCode).toBe(false)
+    expect(simulatePayer({ simulate: async () => {} }).paysBrCode).toBe(false)
+  })
+
   test("facilitator variant throws on non-2xx", async () => {
     const payer = simulatePayer({
       facilitatorUrl: "http://facilitator.test",

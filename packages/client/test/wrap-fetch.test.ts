@@ -259,6 +259,22 @@ describe("wrapFetch", () => {
     expect(paid.spent).toBe(0)
   })
 
+  test("a payer that never pays the BR Code (simulate) skips the BR Code check, not the policy", async () => {
+    // AbacatePay dev mode returns BR Codes with a wrong CRC and field length.
+    const sandboxCode = `${brCode("5.00").slice(0, -4)}0000`
+    const server = simplePaywall(pixRequirements({ extra: { brCode: sandboxCode } }))
+    const { payer, charges } = countingPayer()
+    const simulate = { paysBrCode: false, pay: payer.pay }
+    const response = await wrapFetch(server.fetch, { payer: simulate })(RESOURCE)
+    expect(response.status).toBe(200)
+    expect(charges).toHaveLength(1)
+
+    const over = simplePaywall(pixRequirements({ amount: "5000", extra: { brCode: sandboxCode } }))
+    const error = await caught(wrapFetch(over.fetch, { payer: simulate })(RESOURCE))
+    expect(error.code).toBe("policy_exceeded")
+    expect(charges).toHaveLength(1)
+  })
+
   test("no Pix entry -> no_supported_requirements", async () => {
     const evm = {
       scheme: "exact",

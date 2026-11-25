@@ -7,16 +7,19 @@ export type SimulatePayerOptions =
 
 /**
  * Dev-only payer: marks the charge paid instead of moving money.
+ * It never pays the BR Code, so the client skips the BR Code check for it (sandbox codes, such as
+ * AbacatePay dev mode's, are not valid EMV).
  * Either calls the facilitator's `POST /dev/charges/:id/simulate-payment` or a function you provide.
  */
 export function simulatePayer(options: SimulatePayerOptions): PixPayer {
   if ("simulate" in options) {
     const simulate = options.simulate
-    return { pay: (charge) => simulate(charge.chargeId) }
+    return { paysBrCode: false, pay: (charge) => simulate(charge.chargeId) }
   }
   const fetchImpl = options.fetch ?? defaultFetch
   const base = options.facilitatorUrl.replace(/\/+$/, "")
   return {
+    paysBrCode: false,
     async pay(charge) {
       const url = `${base}/dev/charges/${encodeURIComponent(charge.chargeId)}/simulate-payment`
       const response = await fetchImpl(new Request(url, { method: "POST" }))

@@ -491,7 +491,7 @@ bun run dev:server
 bun run demo
 ```
 
-Com o `.env.example`, o facilitator usa o PSP mock, grava as cobranças em `p-x402.sqlite` e libera a rota de desenvolvimento `POST /dev/charges/:id/simulate-payment`, que o `simulatePayer` do cliente usa para "pagar". Para o AbacatePay, use `PX402_PROVIDER=abacatepay` com `ABACATEPAY_API_KEY` e `ABACATEPAY_WEBHOOK_SECRET`. O adapter foi testado só contra respostas simuladas e ainda não contra o modo teste real do AbacatePay.
+Com o `.env.example`, o facilitator usa o PSP mock, grava as cobranças em `p-x402.sqlite` e libera a rota de desenvolvimento `POST /dev/charges/:id/simulate-payment`, que o `simulatePayer` do cliente usa para "pagar". Para o AbacatePay, use `PX402_PROVIDER=abacatepay` com `ABACATEPAY_API_KEY` e `ABACATEPAY_WEBHOOK_SECRET`. O adapter já foi testado contra o modo dev do AbacatePay: criar, consultar e simular pagamento funcionam de ponta a ponta. Dois detalhes do modo dev: o status leva alguns segundos para virar `PAID` depois do `simulate-payment`, e o BR Code devolvido não é um EMV válido. Por isso o `simulatePayer`, que nunca paga o BR Code, dispensa a checagem dele. O webhook só funciona com uma URL pública cadastrada no painel do AbacatePay; sem ele o fluxo funciona igual, só um pouco mais lento, porque o facilitator consulta o PSP a cada tentativa.
 
 Limites conhecidos desta versão:
 
@@ -516,13 +516,14 @@ Limites conhecidos desta versão:
 
 - [x] `core`: schemas Zod v4, headers, erros
 - [ ] `core/testing`: testes de contrato para `PixProvider` e `ChargeStore`
-- [x] `psp`: provider mock e adapter AbacatePay (este ainda sem teste contra a API real)
+- [x] `psp`: provider mock e adapter AbacatePay
 - [x] `facilitator` com `memoryStore` e `bun-sqlite`
 - [x] `server` com núcleo independente de framework + adapter Hono
 - [x] `client` com `wrapFetch`, policy e payer simulate
 - [ ] payer de terminal (QR) e payer via API bancária
 - [x] E2E: exemplo Hono → facilitator → client, com mock
-- [ ] Integração real com o modo teste do AbacatePay (`simulate-payment`)
+- [x] Integração com o modo dev do AbacatePay (`simulate-payment`)
+- [ ] Webhook do AbacatePay com URL pública (túnel ou deploy)
 - [ ] Build (tsdown), changesets, CI em matriz e docs
 - [ ] `spec/`: JSON Schema, OpenAPI, test-vectors e conformidade em Docker
 - [ ] SDK Python

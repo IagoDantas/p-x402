@@ -124,7 +124,7 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
         origin: requestUrl.origin,
       })
     }
-    checkBrCode(extra.brCode, amount)
+    if (options.payer.paysBrCode !== false) checkBrCode(extra.brCode, amount)
     const value = Number(amount)
     if (value > maxPerRequest) {
       throw new Px402Error("policy_exceeded", "amount above maxPerRequest", {

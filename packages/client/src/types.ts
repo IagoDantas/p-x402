@@ -13,6 +13,12 @@ export interface PixChargeToPay {
 
 export interface PixPayer {
   pay(charge: PixChargeToPay): Promise<void>
+  /**
+   * False only for payers that never pay the BR Code itself (such as `simulatePayer`, which marks the
+   * charge paid by id). The client then skips the BR Code amount check, which exists to stop a payer
+   * from paying a code whose amount differs from the advertised one. Default true.
+   */
+  readonly paysBrCode?: boolean
 }
 
 export interface PaymentEvent {

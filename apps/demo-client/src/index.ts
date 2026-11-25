@@ -9,6 +9,7 @@ const facilitatorUrl = process.env.PX402_FACILITATOR_URL ?? "http://localhost:40
 const payer = simulatePayer({ facilitatorUrl })
 const fetchPaid = wrapFetch(loggingFetch(defaultFetch), {
   payer: {
+    paysBrCode: payer.paysBrCode,
     async pay(charge) {
       say(`pagando ${brl(charge.amount)} via Pix (simulate-payment) — cobrança ${charge.chargeId}`)
       await payer.pay(charge)
