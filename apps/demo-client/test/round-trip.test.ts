@@ -54,6 +54,7 @@ function setup() {
     }
     return c.json({ ok: true, chargeId: c.get("px402").chargeId })
   })
+  seller.onError((_error, c) => c.json({ error: "internal" }, 500))
   seller.get("/explode", pix({ amount: "500" }), () => {
     throw new Error("boom")
   })
@@ -208,24 +209,31 @@ describe("402 → Pix → 200 round trip (mock PSP)", () => {
     ).toBe("charge_already_consumed")
   })
 
-  test("two concurrent requests with one paid charge: exactly one 200", async () => {
+  test("two concurrent requests with one paid charge: exactly one 200, handler runs once more", async () => {
     const env = setup()
     const { fetchPaid, events } = buyer(env)
     env.failHandler(1)
     await fetchPaid(`${SELLER}/relatorio`) // pays, handler fails, charge stays usable
+    expect(env.handlerRuns()).toBe(1)
     const signature = events[0]?.paymentSignature ?? ""
     const send = () =>
       env.sellerFetch(
         new Request(`${SELLER}/relatorio`, { headers: { [HEADER_PAYMENT_SIGNATURE]: signature } }),
       )
     const results = await Promise.all([send(), send(), send()])
-    const statuses = results.map((r) => r.status).sort()
-    expect(statuses).toEqual([200, 402, 402])
+    expect(results.map((r) => r.status).sort()).toEqual([200, 402, 402])
     for (const r of results.filter((x) => x.status === 402)) {
-      expect(
-        decodeSettlementResponse(r.headers.get(HEADER_PAYMENT_RESPONSE) ?? "").errorReason,
-      ).toBe("charge_already_consumed")
+      const reason = decodeSettlementResponse(
+        r.headers.get(HEADER_PAYMENT_RESPONSE) ?? "",
+      ).errorReason
+      expect(["settlement_pending", "charge_already_consumed"]).toContain(reason ?? "")
     }
+    // The per-charge lock keeps the other two from running the handler.
+    expect(env.handlerRuns()).toBe(2)
+    const after = await send()
+    expect(
+      decodeSettlementResponse(after.headers.get(HEADER_PAYMENT_RESPONSE) ?? "").errorReason,
+    ).toBe("charge_already_consumed")
   })
 
   test("unpaid charge expires: client keeps the same charge, then throws charge_expired", async () => {
@@ -282,5 +290,74 @@ describe("402 → Pix → 200 round trip (mock PSP)", () => {
     expect(response.status).toBe(402)
     const required = decodePaymentRequired(response.headers.get(HEADER_PAYMENT_REQUIRED) ?? "")
     expect(required.accepts[0]?.amount).toBe("500")
+  })
+
+  test("a lost /settle answer is retried with the same Idempotency-Key and still delivers", async () => {
+    const env = setup()
+    const facilitator = createFacilitator({
+      provider: env.mock,
+      store: env.store,
+      merchants: [{ id: "loja1", token: TOKEN, payTo: "loja1" }],
+      now: env.now,
+    })
+    const keys: string[] = []
+    let dropped = false
+    // The first /settle reaches the facilitator (the charge is consumed) but its answer is lost.
+    const flaky = async (request: Request) => {
+      const response = await facilitator.fetch(request)
+      if (new URL(request.url).pathname === "/settle") {
+        keys.push(request.headers.get("idempotency-key") ?? "")
+        if (!dropped) {
+          dropped = true
+          return new Response("bad gateway", { status: 502 })
+        }
+      }
+      return response
+    }
+    const seller = new Hono<{ Variables: Px402Variables }>()
+    seller.get(
+      "/relatorio",
+      pixPaywall({
+        facilitatorUrl: "http://facilitator.test",
+        token: TOKEN,
+        fetch: flaky,
+        now: env.now,
+      })({
+        amount: "500",
+      }),
+      (c) => c.json({ ok: true }),
+    )
+    const fetchPaid = wrapFetch(async (r) => seller.fetch(r), {
+      payer: { pay: (charge) => env.mock.simulatePayment(charge.chargeId) },
+      now: env.now,
+      sleep: async (ms) => env.advance(ms),
+    })
+    const response = await fetchPaid(`${SELLER}/relatorio`)
+    expect(response.status).toBe(200)
+    expect(keys).toHaveLength(2)
+    expect(keys[0]).toBe(keys[1] ?? "")
+  })
+
+  test("a facilitator with a 600 s charge TTL still settles", async () => {
+    const env = setup()
+    const facilitator = createFacilitator({
+      provider: env.mock,
+      store: memoryStore(),
+      merchants: [{ id: "loja1", token: TOKEN, payTo: "loja1" }],
+      now: env.now,
+      chargeTtlSeconds: 600,
+    })
+    const demo = createDemoServer({
+      facilitatorUrl: "http://facilitator.test",
+      token: TOKEN,
+      fetch: async (r) => facilitator.fetch(r),
+    })
+    const fetchPaid = wrapFetch(async (r) => demo.fetch(r), {
+      payer: { pay: (charge) => env.mock.simulatePayment(charge.chargeId) },
+      now: env.now,
+      sleep: async (ms) => env.advance(ms),
+    })
+    const response = await fetchPaid(`${SELLER}/relatorio`)
+    expect(response.status).toBe(200)
   })
 })
