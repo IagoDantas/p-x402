@@ -493,6 +493,13 @@ bun run demo
 
 Com o `.env.example`, o facilitator usa o PSP mock, grava as cobranças em `p-x402.sqlite` e libera a rota de desenvolvimento `POST /dev/charges/:id/simulate-payment`, que o `simulatePayer` do cliente usa para "pagar". Para o AbacatePay, use `PX402_PROVIDER=abacatepay` com `ABACATEPAY_API_KEY` e `ABACATEPAY_WEBHOOK_SECRET`. O adapter foi testado só contra respostas simuladas e ainda não contra o modo teste real do AbacatePay.
 
+Limites conhecidos desta versão:
+
+- A trava que impede duas requisições com a mesma cobrança de rodarem o handler ao mesmo tempo vale por processo. Com várias instâncias do vendedor, use roteamento fixo por cobrança ou handlers idempotentes.
+- O `/settle` acontece quando o handler devolve a `Response`. Uma resposta em streaming que falhe depois disso já foi liquidada.
+- `HEAD` e `OPTIONS` em rotas pagas recebem `402` sem criar cobrança.
+- Os limites de taxa ficam em memória, por processo.
+
 ---
 
 ## Schemes
