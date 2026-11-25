@@ -172,4 +172,4 @@ Todo mundo trabalha um pouco em tudo.
 
 ## Licença
 
-_A definir._
+[Apache-2.0](../LICENSE).
