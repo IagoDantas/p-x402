@@ -273,6 +273,25 @@ describe("AbacatePay provider", () => {
       }
     })
 
+    test("default per-request timeout is 5000 ms", async () => {
+      const original = AbortSignal.timeout
+      const requested: number[] = []
+      AbortSignal.timeout = (ms: number) => {
+        requested.push(ms)
+        return new AbortController().signal
+      }
+      try {
+        const s = stub(() => json({ data: { id: "pix_char_1", status: "PAID" }, error: null }))
+        await createAbacatePayProvider({ apiKey: KEY, baseUrl: BASE, fetch: s.fetch }).getCharge(
+          "pix_char_1",
+        )
+        await provider(s.fetch, { timeoutMs: 1234 }).getCharge("pix_char_1")
+      } finally {
+        AbortSignal.timeout = original
+      }
+      expect(requested).toEqual([5000, 1234])
+    })
+
     test("simulatePayment failure is psp_error", async () => {
       const p = provider(async () => json({ data: null, error: "test mode only" }, 403))
       const error = await expectCode(

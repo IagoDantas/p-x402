@@ -16,7 +16,7 @@ export interface AbacatePayProviderOptions {
   /** Default `https://api.abacatepay.com/v2`. */
   baseUrl?: string
   fetch?: FetchLike
-  /** Per-request timeout. Default 10000. */
+  /** Per-request timeout. Default 5000. */
   timeoutMs?: number
 }
 
@@ -66,7 +66,7 @@ export function createAbacatePayProvider(options: AbacatePayProviderOptions): Pi
   }
   const baseUrl = (options.baseUrl ?? ABACATEPAY_DEFAULT_BASE_URL).replace(/\/+$/, "")
   const fetchFn = options.fetch ?? defaultFetch
-  const timeoutMs = options.timeoutMs ?? 10_000
+  const timeoutMs = options.timeoutMs ?? 5_000
 
   // Calls the API and returns the unwrapped `data`. Every failure is psp_error; the key never appears in errors.
   async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {

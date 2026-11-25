@@ -48,6 +48,45 @@ describe("wrapFetch", () => {
     expect(charges).toHaveLength(0)
   })
 
+  test("a 402 reached through a cross-origin redirect is refused before paying", async () => {
+    const variants: Array<{ url: string; redirected: boolean }> = [
+      { url: "https://evil.example.net/relatorio", redirected: true },
+      { url: "https://evil.example.net/relatorio", redirected: false },
+      { url: RESOURCE, redirected: true },
+    ]
+    for (const variant of variants) {
+      const server = scriptedServer(() => {
+        const response = challenge(paymentRequired([pixRequirements()]))
+        Object.defineProperty(response, "url", { value: variant.url })
+        Object.defineProperty(response, "redirected", { value: variant.redirected })
+        return response
+      })
+      const { payer, charges } = countingPayer()
+      const events: PaymentEvent[] = []
+      const paid = wrapFetch(server.fetch, { payer, onPayment: (e) => events.push(e) })
+      const error = await caught(paid(RESOURCE))
+      expect(error.code).toBe("policy_exceeded")
+      expect(error.details?.reason).toBe("redirected")
+      expect(charges).toHaveLength(0)
+      expect(events).toHaveLength(0)
+      expect(paid.spent).toBe(0)
+      expect(server.seen).toHaveLength(1)
+    }
+  })
+
+  test("a 402 whose url is the request origin (not redirected) is paid", async () => {
+    const server = scriptedServer((_attempt, _request, seen) => {
+      if (seen.signature !== null) return new Response("ok")
+      const response = challenge(paymentRequired([pixRequirements()]))
+      Object.defineProperty(response, "url", { value: RESOURCE })
+      return response
+    })
+    const { payer, charges } = countingPayer()
+    const response = await wrapFetch(server.fetch, { payer })(RESOURCE)
+    expect(response.status).toBe(200)
+    expect(charges).toHaveLength(1)
+  })
+
   test("402 -> pay -> 200", async () => {
     const server = simplePaywall()
     const { payer, charges } = countingPayer()

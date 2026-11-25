@@ -67,12 +67,24 @@ describe("mock PixProvider", () => {
     if (!first) throw new Error("no webhook")
     const event = await mock.parseWebhook(first)
     expect(event).toEqual({
-      id: "log_mock_0001",
+      id: "log_pix_char_mock_0001",
       kind: "paid",
       event: "transparent.completed",
       chargeId: c.id,
     })
     expect(JSON.stringify(event)).not.toContain("Fulano")
+  })
+
+  test("webhook envelope ids derive from idPrefix so two mocks never share them", async () => {
+    const a = createMockPixProvider({ idPrefix: "pix_char_a_" })
+    const b = createMockPixProvider({ idPrefix: "pix_char_b_" })
+    const ca = await a.createCharge({ amount: 500, expiresIn: 300, externalId: "e" })
+    const cb = await b.createCharge({ amount: 500, expiresIn: 300, externalId: "e" })
+    const ea = await a.parseWebhook(a.webhookRequest("paid", ca.id))
+    const eb = await b.parseWebhook(b.webhookRequest("paid", cb.id))
+    expect(ea.id).toBe("log_pix_char_a_0001")
+    expect(eb.id).toBe("log_pix_char_b_0001")
+    expect((await a.parseWebhook(a.webhookRequest("paid", ca.id))).id).toBe("log_pix_char_a_0002")
   })
 
   test("webhook with a wrong secret is rejected", async () => {

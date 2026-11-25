@@ -103,6 +103,8 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
     const header = response.headers.get(HEADER_PAYMENT_REQUIRED)
     if (header === null) return response
     discardBody(response)
+    const requestUrl = new URL(request.url)
+    checkNotRedirected(response, requestUrl)
 
     const required = decodePaymentRequired(header)
     const picked = pickPix(required.accepts)
@@ -113,7 +115,6 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
     }
     const { raw, requirements } = picked
     const { extra, amount } = requirements
-    const requestUrl = new URL(request.url)
 
     // Everything below up to payer.pay is synchronous so concurrent calls cannot overspend.
     checkResource(required, requirements, requestUrl)
@@ -207,6 +208,24 @@ function checkResource(
       resourceUrl,
       resource: required.resource.url,
       origin: requestUrl.origin,
+    })
+  }
+}
+
+/**
+ * A 402 that arrived after a redirect was issued by a server the caller did not address: refuse
+ * to pay it, since its resource checks would run against the wrong origin.
+ */
+function checkNotRedirected(response: Response, requestUrl: URL): void {
+  const responseOrigin =
+    response.url !== "" && URL.canParse(response.url) ? new URL(response.url).origin : undefined
+  const foreign =
+    response.url !== "" && (responseOrigin === undefined || responseOrigin !== requestUrl.origin)
+  if (response.redirected || foreign) {
+    throw new Px402Error("policy_exceeded", "402 came from a redirected response", {
+      reason: "redirected",
+      origin: requestUrl.origin,
+      responseUrl: response.url,
     })
   }
 }

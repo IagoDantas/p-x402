@@ -81,7 +81,7 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
     opts: { secret?: string; envelopeId?: string } = {},
   ): Request {
     const charge = charges.get(chargeId)
-    const envelopeId = opts.envelopeId ?? `log_mock_${String(++eventSequence).padStart(4, "0")}`
+    const envelopeId = opts.envelopeId ?? `log_${prefix}${String(++eventSequence).padStart(4, "0")}`
     const body = {
       id: envelopeId,
       event: kind === "other" ? "transparent.created" : EVENT_NAMES[kind],

@@ -114,4 +114,41 @@ describe("header codec", () => {
       PixPaymentRequirementsSchema.safeParse({ ...requirements, network: "eip155:8453" }).success,
     ).toBe(false)
   })
+
+  test("Pix extra caps brCodeBase64 at 4096 chars", () => {
+    const withQr = (brCodeBase64: string) => ({
+      ...requirements,
+      extra: { ...requirements.extra, brCodeBase64 },
+    })
+    expect(PixPaymentRequirementsSchema.safeParse(withQr("A".repeat(4096))).success).toBe(true)
+    expect(PixPaymentRequirementsSchema.safeParse(withQr("A".repeat(4097))).success).toBe(false)
+  })
+
+  test("a realistic PAYMENT-REQUIRED encodes well under MAX_HEADER_BYTES", () => {
+    const realistic: PaymentRequired = {
+      x402Version: 2,
+      error: "PAYMENT-SIGNATURE header is required",
+      resource: {
+        url: "https://api.loja.com.br/v1/relatorios/2026/novembro?formato=pdf",
+        description: "Relatório mensal de vendas — PDF com gráficos e tabelas detalhadas",
+        mimeType: "application/pdf",
+      },
+      accepts: [
+        {
+          ...requirements,
+          amount: "123456",
+          payTo: "loja_principal_sao_paulo_0001",
+          extra: {
+            ...requirements.extra,
+            resourceUrl: "https://api.loja.com.br/v1/relatorios/2026/novembro?formato=pdf",
+            chargeId: `pix_char_${"x".repeat(100)}`,
+            brCode: `00020101021226${"9".repeat(300)}6304ABCD`,
+          },
+        },
+      ],
+    }
+    const header = encodePaymentRequired(realistic)
+    expect(header.length).toBeLessThan(MAX_HEADER_BYTES / 4)
+    expect(decodePaymentRequired(header)).toEqual(realistic)
+  })
 })

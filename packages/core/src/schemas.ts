@@ -46,7 +46,7 @@ export const PixExtraSchema = z.object({
   resourceUrl: HttpUrlSchema,
   chargeId: z.string().min(1).max(128),
   brCode: z.string().min(1).max(1024),
-  brCodeBase64: z.string().max(65_536).optional(),
+  brCodeBase64: z.string().max(4096).optional(),
   expiresAt: z.iso.datetime({ offset: true }),
 })
 export type PixExtra = z.infer<typeof PixExtraSchema>
