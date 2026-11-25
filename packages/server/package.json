@@ -1,0 +1,19 @@
+{
+  "name": "@p-x402/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./hono": "./src/hono.ts"
+  },
+  "dependencies": {
+    "@p-x402/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "hono": "^4.13.0"
+  },
+  "devDependencies": {
+    "hono": "4.13.22"
+  }
+}

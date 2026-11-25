@@ -2,7 +2,10 @@
   "name": "p-x402",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "dev:facilitator": "bun --watch apps/facilitator/src/index.ts",
     "dev:server": "bun --watch apps/demo-server/src/index.ts",

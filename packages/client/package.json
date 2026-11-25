@@ -1,0 +1,12 @@
+{
+  "name": "@p-x402/client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@p-x402/core": "workspace:*"
+  }
+}

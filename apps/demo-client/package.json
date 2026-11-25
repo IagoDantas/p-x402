@@ -1,0 +1,13 @@
+{
+  "name": "@p-x402/demo-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@p-x402/client": "workspace:*",
+    "@p-x402/core": "workspace:*",
+    "@p-x402/psp": "workspace:*",
+    "@p-x402/facilitator": "workspace:*",
+    "@p-x402/demo-server": "workspace:*"
+  }
+}
