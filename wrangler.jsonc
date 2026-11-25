@@ -1,0 +1,11 @@
+{
+  // Landing page do p-x402 (docs/index.html) servida como Worker só de assets estáticos.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "p-x402-site",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./docs",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [{ "pattern": "p-x402.com", "custom_domain": true }]
+}

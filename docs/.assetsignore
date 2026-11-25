@@ -1,0 +1,3 @@
+# Não publicar os documentos internos junto com a landing page
+*.md
+*.MD

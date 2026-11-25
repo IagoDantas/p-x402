@@ -2,7 +2,10 @@
   "name": "p-x402",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "dev:facilitator": "bun --watch apps/facilitator/src/index.ts",
     "dev:server": "bun --watch apps/demo-server/src/index.ts",
@@ -11,11 +14,14 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "biome check .",
-    "format": "biome check --write ."
+    "format": "biome check --write .",
+    "deploy:site": "wrangler deploy",
+    "dev:site": "wrangler dev"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.9",
     "@types/bun": "1.4.5",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "wrangler": "4.168.0"
   }
 }
