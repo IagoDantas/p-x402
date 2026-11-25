@@ -25,6 +25,11 @@ export function defaultClientIp(c: Context): string | undefined {
   }
 }
 
+/**
+ * Hono middleware factory. Settle happens when the handler returns its Response: a streamed body
+ * that fails later is still settled. Multi-instance deployments need sticky routing per chargeId
+ * or idempotent handlers (see `PaywallConfig`).
+ */
 export function pixPaywall(
   config: HonoPaywallConfig,
 ): (route: PaywallRoute) => MiddlewareHandler<{ Variables: Px402Variables }> {
@@ -36,9 +41,18 @@ export function pixPaywall(
       const result = await paywall.handle(c.req.raw, route, clientIp ? { clientIp } : {})
       if (result.type === "response") return result.response
       c.set("px402", { chargeId: result.chargeId, amount: result.amount })
-      await next()
+      try {
+        await next()
+      } catch (error) {
+        result.release()
+        throw error
+      }
       // The handler threw (Hono already set an error response): never settle.
-      if (c.error !== undefined) return
+      if (c.error !== undefined) {
+        result.release()
+        return
+      }
+      // finalize releases the chargeId lock itself, including when it skips settle (status >= 400).
       const out = await result.finalize(c.res)
       if (out !== c.res) {
         c.res = undefined

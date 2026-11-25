@@ -10,6 +10,7 @@ import { createPaywall, type PaywallConfig, type PaywallResult } from "../src/in
 import {
   FACILITATOR,
   fakeClock,
+  gate,
   paymentSignature,
   pixRequirements,
   stubFacilitator,
@@ -444,7 +445,7 @@ describe("paid retry", () => {
     expect(stub.calls).toHaveLength(0)
   })
 
-  test("only payTo, provider and dynamic keys are copied from accepted", async () => {
+  test("only payTo, provider, maxTimeoutSeconds and dynamic keys are copied from accepted", async () => {
     const { stub, paywall } = setup()
     const base = pixRequirements()
     const accepted = {
@@ -473,7 +474,7 @@ describe("paid retry", () => {
       asset: "BRL",
       amount: "500",
       payTo: "loja2",
-      maxTimeoutSeconds: 300,
+      maxTimeoutSeconds: 99_999,
       extra: {
         paymentFlow: "upfront",
         assetTransferMethod: "pix-charge",
@@ -541,4 +542,289 @@ describe("paid retry", () => {
     const settlement = decodeSettlementResponse(res.headers.get("PAYMENT-RESPONSE") ?? "")
     expect(settlement.errorReason).toBe("invalid_payload")
   })
+})
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+describe("maxTimeoutSeconds", () => {
+  test("maxTimeoutSeconds is copied from accepted into the /verify and /settle requirements", async () => {
+    const { stub, paywall } = setup()
+    const accepted = { ...pixRequirements(), maxTimeoutSeconds: 600 }
+    const result = paid(await paywall.handle(paidRequest(accepted), route))
+    expect(result.requirements.maxTimeoutSeconds).toBe(600)
+    await result.finalize(new Response("report"))
+    for (const path of ["/verify", "/settle"]) {
+      const body = stub.callsTo(path)[0]?.body as {
+        paymentRequirements: { maxTimeoutSeconds: number }
+      }
+      expect(body.paymentRequirements.maxTimeoutSeconds).toBe(600)
+    }
+  })
+})
+
+describe("settle idempotency and retries", () => {
+  test("settle carries a UUID Idempotency-Key; /verify and /pix/charges do not", async () => {
+    const { stub, paywall } = setup()
+    response(await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }))
+    const result = paid(await paywall.handle(paidRequest(), route))
+    expect((await result.finalize(new Response("report"))).status).toBe(200)
+    expect(stub.idempotencyKeys("/pix/charges")).toEqual([null])
+    expect(stub.idempotencyKeys("/verify")).toEqual([null])
+    const [key] = stub.idempotencyKeys("/settle")
+    expect(key).toMatch(UUID)
+  })
+
+  test("each finalize uses a fresh Idempotency-Key", async () => {
+    const { stub, paywall } = setup()
+    const first = paid(await paywall.handle(paidRequest(), route))
+    await first.finalize(new Response("report"))
+    const second = paid(
+      await paywall.handle(paidRequest(pixRequirements({ chargeId: "pix_char_mock_0002" })), route),
+    )
+    await second.finalize(new Response("report"))
+    const keys = stub.idempotencyKeys("/settle")
+    expect(keys).toHaveLength(2)
+    expect(keys[0]).not.toBe(keys[1])
+  })
+
+  test("settle 5xx is retried with the same Idempotency-Key; success on the 2nd attempt → 200", async () => {
+    const { stub, paywall } = setup()
+    let attempts = 0
+    stub.reply("/settle", () => {
+      attempts += 1
+      if (attempts === 1) return stub.json({ error: "unexpected_error" }, 503)
+      return stub.json({
+        success: true,
+        transaction: "pix_char_mock_0001",
+        network: "pix:br",
+        amount: "500",
+      })
+    })
+    const result = paid(await paywall.handle(paidRequest(), route))
+    const out = await result.finalize(new Response("report"))
+    expect(out.status).toBe(200)
+    expect(await out.text()).toBe("report")
+    expect(decodeSettlementResponse(out.headers.get("PAYMENT-RESPONSE") ?? "").success).toBe(true)
+    const keys = stub.idempotencyKeys("/settle")
+    expect(keys).toHaveLength(2)
+    expect(keys[0]).toMatch(UUID)
+    expect(keys[1]).toBe(keys[0] ?? "")
+  })
+
+  test("settle timeout is retried with the same Idempotency-Key; success on the 2nd attempt → 200", async () => {
+    const { stub, paywall } = setup({ facilitatorTimeoutMs: 5 })
+    let attempts = 0
+    stub.reply("/settle", () => {
+      attempts += 1
+      if (attempts === 1) return new Promise<Response>(() => {})
+      return stub.json({ success: true, transaction: "pix_char_mock_0001", network: "pix:br" })
+    })
+    const result = paid(await paywall.handle(paidRequest(), route))
+    const out = await result.finalize(new Response("report"))
+    expect(out.status).toBe(200)
+    const keys = stub.idempotencyKeys("/settle")
+    expect(keys).toHaveLength(2)
+    expect(keys[1]).toBe(keys[0] ?? "")
+  })
+
+  test("transport errors: 3 attempts in total with one key, then 502", async () => {
+    const { stub, paywall } = setup()
+    stub.reply("/settle", () => {
+      throw new TypeError("connection refused")
+    })
+    const result = paid(await paywall.handle(paidRequest(), route))
+    const out = await result.finalize(new Response("secret report"))
+    expect(out.status).toBe(502)
+    expect(await out.text()).not.toContain("secret")
+    const keys = stub.idempotencyKeys("/settle")
+    expect(keys).toHaveLength(3)
+    expect(new Set(keys).size).toBe(1)
+  })
+
+  test("no retry on a 200 with success:false, nor on a 400 or 401", async () => {
+    const { stub, paywall } = setup()
+    const failure = {
+      success: false,
+      errorReason: "charge_already_consumed",
+      transaction: "pix_char_mock_0001",
+      network: "pix:br",
+    }
+    for (const reply of [stub.json(failure), stub.json(failure, 400), stub.json({}, 401)]) {
+      stub.reply("/settle", reply)
+      const before = stub.callsTo("/settle").length
+      const result = paid(await paywall.handle(paidRequest(), route))
+      const out = await result.finalize(new Response("report"))
+      expect(out.status).not.toBe(200)
+      expect(stub.callsTo("/settle").length - before).toBe(1)
+    }
+  })
+
+  test("default facilitator timeout is 15000 ms per attempt", async () => {
+    const timers = spyOn(globalThis, "setTimeout")
+    try {
+      const { paywall } = setup()
+      const result = paid(await paywall.handle(paidRequest(), route))
+      await result.finalize(new Response("report"))
+      const delays = timers.mock.calls.map((call) => call[1])
+      // One timer for /verify and one for /settle, each 15000 ms.
+      expect(delays).toEqual([15_000, 15_000])
+    } finally {
+      timers.mockRestore()
+    }
+  })
+
+  test("/verify is never retried", async () => {
+    const { stub, paywall } = setup()
+    stub.reply("/verify", stub.json({ error: "unexpected_error" }, 500))
+    expect(response(await paywall.handle(paidRequest(), route)).status).toBe(502)
+    expect(stub.callsTo("/verify")).toHaveLength(1)
+  })
+})
+
+describe("chargeId lock", () => {
+  test("concurrent requests for one charge: handler runs once, the second gets settlement_pending without /verify", async () => {
+    const { stub, paywall } = setup()
+    const verifyGate = gate()
+    stub.reply("/verify", () => verifyGate.opened.then(() => stub.json({ isValid: true })))
+    let handlerRuns = 0
+    const run = async () => {
+      const result = await paywall.handle(paidRequest(), route)
+      if (result.type === "response") return result.response
+      handlerRuns += 1
+      return result.finalize(new Response("report"))
+    }
+
+    const first = run()
+    const second = await run()
+    expect(second.status).toBe(402)
+    expect(second.headers.get("Retry-After")).toBe("2")
+    const required = decodePaymentRequired(second.headers.get("PAYMENT-REQUIRED") ?? "")
+    expect(PixPaymentRequirementsSchema.parse(required.accepts[0]).extra.chargeId).toBe(
+      "pix_char_mock_0001",
+    )
+    expect(decodeSettlementResponse(second.headers.get("PAYMENT-RESPONSE") ?? "")).toEqual({
+      success: false,
+      errorReason: "settlement_pending",
+      transaction: "pix_char_mock_0001",
+      network: "pix:br",
+    })
+    expect(stub.callsTo("/verify")).toHaveLength(1)
+
+    verifyGate.open()
+    expect((await first).status).toBe(200)
+    expect(handlerRuns).toBe(1)
+    expect(stub.callsTo("/settle")).toHaveLength(1)
+
+    // Settled: the lock is gone, a later request verifies again.
+    stub.reply("/verify", undefined)
+    paid(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(2)
+  })
+
+  test("a different chargeId is not blocked", async () => {
+    const { stub, paywall } = setup()
+    paid(await paywall.handle(paidRequest(), route))
+    paid(
+      await paywall.handle(paidRequest(pixRequirements({ chargeId: "pix_char_mock_0002" })), route),
+    )
+    expect(stub.callsTo("/verify")).toHaveLength(2)
+  })
+
+  test("lock released after a handler 500: a later retry verifies again", async () => {
+    const { stub, paywall } = setup()
+    const first = paid(await paywall.handle(paidRequest(), route))
+    blockedWithoutVerify(await paywall.handle(paidRequest(), route))
+    const out = await first.finalize(new Response("boom", { status: 500 }))
+    expect(out.status).toBe(500)
+    expect(stub.callsTo("/settle")).toHaveLength(0)
+    paid(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(2)
+  })
+
+  test("release() frees the lock when the handler threw", async () => {
+    const { stub, paywall } = setup()
+    const first = paid(await paywall.handle(paidRequest(), route))
+    first.release()
+    first.release()
+    paid(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(2)
+  })
+
+  test("lock released when settle fails", async () => {
+    const { stub, paywall } = setup()
+    stub.reply("/settle", stub.json({}, 401))
+    const first = paid(await paywall.handle(paidRequest(), route))
+    expect((await first.finalize(new Response("report"))).status).toBe(500)
+    paid(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(2)
+  })
+
+  test("lock released when /verify does not pass", async () => {
+    const { stub, paywall } = setup()
+    stub.reply("/verify", stub.json({ isValid: false, invalidReason: "settlement_pending" }))
+    response(await paywall.handle(paidRequest(), route))
+    stub.reply("/verify", stub.json({ error: "unexpected_error" }, 500))
+    response(await paywall.handle(paidRequest(), route))
+    stub.reply("/verify", undefined)
+    paid(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(3)
+  })
+
+  test("a lock older than 60 s is ignored; the old holder does not release the new lock", async () => {
+    const { clock, stub, paywall } = setup()
+    const first = paid(await paywall.handle(paidRequest(), route))
+    clock.advance(59_999)
+    blockedWithoutVerify(await paywall.handle(paidRequest(), route))
+    clock.advance(1)
+    const second = paid(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(2)
+
+    await first.finalize(new Response("report"))
+    blockedWithoutVerify(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(2)
+
+    await second.finalize(new Response("report"))
+    paid(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(3)
+  })
+})
+
+function blockedWithoutVerify(result: PaywallResult) {
+  const res = response(result)
+  expect(res.status).toBe(402)
+  expect(res.headers.get("Retry-After")).toBe("2")
+  expect(decodeSettlementResponse(res.headers.get("PAYMENT-RESPONSE") ?? "").errorReason).toBe(
+    "settlement_pending",
+  )
+}
+
+describe("unpayable methods", () => {
+  for (const method of ["HEAD", "OPTIONS"]) {
+    test(`${method} → 402 method_not_payable, no facilitator call, IP cap untouched`, async () => {
+      const { stub, paywall } = setup({ ipRateLimit: { limit: 1, windowMs: 60_000 } })
+      const variants: Record<string, string>[] = [
+        {},
+        { "PAYMENT-SIGNATURE": paymentSignature(pixRequirements()) },
+      ]
+      for (const headers of variants) {
+        for (let i = 0; i < 3; i++) {
+          const res = response(
+            await paywall.handle(new Request(URL_RELATORIO, { method, headers }), route, {
+              clientIp: "1.2.3.4",
+            }),
+          )
+          expect(res.status).toBe(402)
+          expect(res.headers.get("PAYMENT-REQUIRED")).toBeNull()
+          expect(res.headers.get("PAYMENT-RESPONSE")).toBeNull()
+          expect(await res.json()).toEqual({ error: "method_not_payable" })
+        }
+      }
+      expect(stub.calls).toHaveLength(0)
+      const get = response(
+        await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }),
+      )
+      expect(get.status).toBe(402)
+      expect(get.headers.get("PAYMENT-REQUIRED")).not.toBeNull()
+    })
+  }
 })

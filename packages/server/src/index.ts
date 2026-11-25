@@ -1,6 +1,5 @@
 import {
   AtomicAmountSchema,
-  CHARGE_TTL_SECONDS,
   CreateChargeResponseSchema,
   createRateLimiter,
   decodePaymentPayload,
@@ -35,6 +34,12 @@ import { clientIpKey, UNKNOWN_IP_KEY } from "./ip"
 
 export { clientIpKey, UNKNOWN_IP_KEY } from "./ip"
 
+/**
+ * Paywall configuration.
+ *
+ * Concurrency: one chargeId is served by at most one request at a time per process (in-process
+ * lock). Multi-instance deployments need sticky routing per chargeId or idempotent handlers.
+ */
 export interface PaywallConfig {
   /** Base URL of the p-x402 facilitator. */
   facilitatorUrl: string
@@ -46,9 +51,17 @@ export interface PaywallConfig {
   ipRateLimit?: { limit: number; windowMs: number }
   /** Public origin (e.g. "https://api.example.com") used to build resource URLs behind a proxy. */
   publicOrigin?: string
-  /** Default 10000. */
+  /**
+   * Per-attempt timeout for facilitator calls. Default 15000. A failed /settle (transport error,
+   * timeout or 5xx) is retried up to 2 more times with the same Idempotency-Key.
+   */
   facilitatorTimeoutMs?: number
 }
+// Concurrency note: a paid request takes an in-process lock on its chargeId from just before
+// /verify until finalize settles (or release() is called). While held, a second request for the
+// same chargeId gets settlement_pending without /verify and without running the handler. The lock
+// lives in this process only: multi-instance deployments need sticky routing per chargeId, or
+// handlers that are safe to run twice for one charge.
 
 export interface PaywallRoute {
   /** Price in centavos. */
@@ -70,8 +83,17 @@ export type PaywallResult =
       chargeId: string
       amount: string
       requirements: PixPaymentRequirements
-      /** Settles after the handler ran. Returns the response to send. */
+      /**
+       * Settles after the handler ran. Returns the response to send. Settle happens when the
+       * handler returns its Response: a streamed body that fails later is still settled.
+       * Always releases the chargeId lock.
+       */
       finalize(response: Response): Promise<Response>
+      /**
+       * Releases the chargeId lock without settling. Call it when the handler threw and
+       * finalize will not run. Idempotent; finalize calls it too.
+       */
+      release(): void
     }
 
 export interface Paywall {
@@ -79,7 +101,13 @@ export interface Paywall {
 }
 
 const DEFAULT_IP_RATE_LIMIT = { limit: 10, windowMs: 60_000 }
-const DEFAULT_FACILITATOR_TIMEOUT_MS = 10_000
+const DEFAULT_FACILITATOR_TIMEOUT_MS = 15_000
+/** Extra /settle attempts after a transport error, timeout or 5xx. */
+const SETTLE_RETRIES = 2
+/** A chargeId lock older than this is ignored (the request that took it is presumed gone). */
+const LOCK_STALE_MS = 60_000
+const LOCK_SWEEP_SIZE = 1024
+const UNPAYABLE_METHODS = new Set(["HEAD", "OPTIONS"])
 
 type FacilitatorAnswer =
   | { ok: true; status: number; headers: Headers; body: unknown }
@@ -154,11 +182,30 @@ export function createPaywall(config: PaywallConfig): Paywall {
     config.publicOrigin === undefined ? undefined : parseOrigin(config.publicOrigin)
   const fetchFn = config.fetch ?? defaultFetch
   const timeoutMs = config.facilitatorTimeoutMs ?? DEFAULT_FACILITATOR_TIMEOUT_MS
+  const now = config.now ?? Date.now
   const limiter = createRateLimiter({
     ...(config.ipRateLimit ?? DEFAULT_IP_RATE_LIMIT),
-    now: config.now ?? Date.now,
+    now,
   })
   let warnedUnknownIp = false
+  /** chargeId → lock held by one in-flight paid request (see the PaywallConfig note). */
+  const locks = new Map<string, { at: number }>()
+
+  /** Takes the lock for chargeId, or returns undefined when a fresh lock is held. */
+  function acquireLock(chargeId: string): (() => void) | undefined {
+    const at = now()
+    const held = locks.get(chargeId)
+    if (held !== undefined && at - held.at < LOCK_STALE_MS) return undefined
+    if (locks.size >= LOCK_SWEEP_SIZE) {
+      for (const [id, lock] of locks) if (at - lock.at >= LOCK_STALE_MS) locks.delete(id)
+    }
+    const token = { at }
+    locks.set(chargeId, token)
+    return () => {
+      // A stale lock may have been taken over: release only our own.
+      if (locks.get(chargeId) === token) locks.delete(chargeId)
+    }
+  }
 
   function resourceUrlFor(request: Request, route: PaywallRoute): string {
     const url = new URL(request.url)
@@ -171,7 +218,11 @@ export function createPaywall(config: PaywallConfig): Paywall {
   }
 
   /** POST JSON to the facilitator. Transport errors, timeouts and non-JSON bodies → `{ok:false}`. */
-  async function post(path: string, body: unknown): Promise<FacilitatorAnswer> {
+  async function post(
+    path: string,
+    body: unknown,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<FacilitatorAnswer> {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<FacilitatorAnswer>((resolve) => {
@@ -187,6 +238,7 @@ export function createPaywall(config: PaywallConfig): Paywall {
           headers: {
             authorization: `Bearer ${config.token}`,
             "content-type": "application/json",
+            ...extraHeaders,
           },
           body: JSON.stringify(body),
           signal: controller.signal,
@@ -230,8 +282,18 @@ export function createPaywall(config: PaywallConfig): Paywall {
     path: "/verify" | "/settle",
     body: unknown,
     chargeId: string,
+    idempotencyKey?: string,
   ): Promise<Outcome<SettlementResponse | undefined>> {
-    const answer = await post(path, body)
+    // Only /settle carries a key. Retry transport errors, timeouts and 5xx with the same key so
+    // the facilitator can answer a replay of an already-consumed charge with the same success.
+    const headers: Record<string, string> =
+      idempotencyKey === undefined ? {} : { "idempotency-key": idempotencyKey }
+    let answer = await post(path, body, headers)
+    if (idempotencyKey !== undefined) {
+      for (let retry = 0; retry < SETTLE_RETRIES && (!answer.ok || answer.status >= 500); retry++) {
+        answer = await post(path, body, headers)
+      }
+    }
     if (!answer.ok || answer.status >= 500) {
       return { kind: "response", response: facilitatorError(chargeId) }
     }
@@ -354,6 +416,10 @@ export function createPaywall(config: PaywallConfig): Paywall {
     ctx: PaywallContext = {},
   ): Promise<PaywallResult> {
     const amount = validateRoute(route)
+    // HEAD/OPTIONS never create, verify or settle a charge (and never touch the IP cap).
+    if (UNPAYABLE_METHODS.has(request.method.toUpperCase())) {
+      return { type: "response", response: jsonResponse(402, { error: "method_not_payable" }) }
+    }
     const resourceUrl = resourceUrlFor(request, route)
     const resource: ResourceInfo = {
       url: resourceUrl,
@@ -379,7 +445,8 @@ export function createPaywall(config: PaywallConfig): Paywall {
     const pix = PixPaymentPayloadSchema.safeParse(payload)
     if (!pix.success) return { type: "response", response: badHeader("invalid_payload") }
 
-    // Server-owned fields from config; only payTo, provider and per-charge keys come from the client.
+    // Server-owned fields from config; only payTo, provider, maxTimeoutSeconds and per-charge keys
+    // come from the client (the facilitator checks them against its charge record and config).
     const accepted = pix.data.accepted
     const chargeId = accepted.extra.chargeId
     const requirements: PixPaymentRequirements = {
@@ -388,7 +455,7 @@ export function createPaywall(config: PaywallConfig): Paywall {
       asset: PIX_ASSET,
       amount,
       payTo: accepted.payTo,
-      maxTimeoutSeconds: CHARGE_TTL_SECONDS,
+      maxTimeoutSeconds: accepted.maxTimeoutSeconds,
       extra: {
         paymentFlow: PIX_PAYMENT_FLOW,
         assetTransferMethod: PIX_ASSET_TRANSFER_METHOD,
@@ -413,9 +480,26 @@ export function createPaywall(config: PaywallConfig): Paywall {
       paymentRequirements: requirements,
     }
 
-    const verified = await verifyOrSettle("/verify", facilitatorBody, chargeId)
-    if (verified.kind === "response") return { type: "response", response: verified.response }
-    if (verified.kind === "failed") {
+    // Another request for this charge is between /verify and settle: do not verify, do not run
+    // the handler; the client retries after Retry-After.
+    const release = acquireLock(chargeId)
+    if (release === undefined) {
+      return {
+        type: "response",
+        response: failureResponse("settlement_pending", chargeId, paymentRequired),
+      }
+    }
+
+    let verified: Outcome<SettlementResponse | undefined>
+    try {
+      verified = await verifyOrSettle("/verify", facilitatorBody, chargeId)
+    } catch (error) {
+      release()
+      throw error
+    }
+    if (verified.kind !== "value") {
+      release()
+      if (verified.kind === "response") return { type: "response", response: verified.response }
       return {
         type: "response",
         response: failureResponse(verified.reason, chargeId, paymentRequired),
@@ -427,24 +511,34 @@ export function createPaywall(config: PaywallConfig): Paywall {
       chargeId,
       amount,
       requirements,
+      release,
       async finalize(response) {
-        // Handler failed: no settle, the paid charge stays unused.
-        if (response.status >= 400) return response
-        const settled = await verifyOrSettle("/settle", facilitatorBody, chargeId)
-        if (settled.kind === "value" && settled.value) {
-          const headers = new Headers(response.headers)
-          headers.set(HEADER_PAYMENT_RESPONSE, encodeSettlementResponse(settled.value))
-          return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers,
-          })
+        try {
+          // Handler failed: no settle, the paid charge stays unused.
+          if (response.status >= 400) return response
+          const settled = await verifyOrSettle(
+            "/settle",
+            facilitatorBody,
+            chargeId,
+            crypto.randomUUID(),
+          )
+          if (settled.kind === "value" && settled.value) {
+            const headers = new Headers(response.headers)
+            headers.set(HEADER_PAYMENT_RESPONSE, encodeSettlementResponse(settled.value))
+            return new Response(response.body, {
+              status: response.status,
+              statusText: response.statusText,
+              headers,
+            })
+          }
+          // Handler output is discarded.
+          await response.body?.cancel().catch(() => undefined)
+          if (settled.kind === "response") return settled.response
+          const reason = settled.kind === "failed" ? settled.reason : "unexpected_error"
+          return failureResponse(reason, chargeId, paymentRequired)
+        } finally {
+          release()
         }
-        // Handler output is discarded.
-        await response.body?.cancel().catch(() => undefined)
-        if (settled.kind === "response") return settled.response
-        const reason = settled.kind === "failed" ? settled.reason : "unexpected_error"
-        return failureResponse(reason, chargeId, paymentRequired)
       },
     }
   }

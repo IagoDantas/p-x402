@@ -25,6 +25,15 @@ export function fakeClock(start = Date.parse("2026-11-25T15:00:00.000Z")) {
   }
 }
 
+/** A promise that resolves only when `open()` is called (gates a stub reply). */
+export function gate() {
+  let open: () => void = () => {}
+  const opened = new Promise<void>((resolve) => {
+    open = resolve
+  })
+  return { opened, open: () => open() }
+}
+
 export function pixRequirements(
   overrides: { chargeId?: string; amount?: string; resourceUrl?: string } = {},
 ): PixPaymentRequirements {
@@ -61,6 +70,7 @@ type Reply = Response | (() => Response | Promise<Response>)
 /** In-process facilitator stub: records every call; replies are programmable per path. */
 export function stubFacilitator(events: string[] = []) {
   const calls: RecordedCall[] = []
+  const keys: { path: string; idempotencyKey: string | null }[] = []
   let charges = 0
   const replies: Record<string, Reply | undefined> = {}
   const json = (body: unknown, status = 200) =>
@@ -70,6 +80,7 @@ export function stubFacilitator(events: string[] = []) {
     const path = new URL(request.url).pathname
     const body: unknown = await request.json()
     calls.push({ path, auth: request.headers.get("authorization"), body })
+    keys.push({ path, idempotencyKey: request.headers.get("idempotency-key") })
     events.push(path)
     const reply = replies[path]
     if (reply) return typeof reply === "function" ? reply() : reply.clone()
@@ -108,6 +119,10 @@ export function stubFacilitator(events: string[] = []) {
     },
     callsTo(path: string) {
       return calls.filter((call) => call.path === path)
+    },
+    /** Idempotency-Key header of each call to `path`, in order. */
+    idempotencyKeys(path: string) {
+      return keys.filter((key) => key.path === path).map((key) => key.idempotencyKey)
     },
   }
 }

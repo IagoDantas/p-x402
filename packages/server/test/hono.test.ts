@@ -5,6 +5,7 @@ import { type HonoPaywallConfig, type Px402Variables, pixPaywall } from "../src/
 import {
   FACILITATOR,
   fakeClock,
+  gate,
   paymentSignature,
   pixRequirements,
   stubFacilitator,
@@ -42,6 +43,11 @@ function setup(extra: Partial<HonoPaywallConfig> = {}) {
     throw new Error("handler exploded")
   })
   app.get("/missing", paid({ amount: 500 }), (c) => c.json({ error: "nope" }, 404))
+  // A non-Error throw skips Hono's onError, so next() itself rejects in the middleware.
+  app.get("/raw-throw", paid({ amount: 500 }), () => {
+    stub.events.push("handler")
+    throw "not an Error"
+  })
   return { app, stub }
 }
 
@@ -167,5 +173,90 @@ describe("pixPaywall (Hono)", () => {
     expect(res.status).toBe(200)
     expect(res.headers.get("PAYMENT-RESPONSE")).toBeNull()
     expect(stub.callsTo("/settle")).toHaveLength(0)
+  })
+
+  test("concurrent paid requests for one charge: handler runs once, the other gets settlement_pending", async () => {
+    const { app, stub } = setup()
+    const verifyGate = gate()
+    stub.reply("/verify", () => verifyGate.opened.then(() => stub.json({ isValid: true })))
+    const init = { headers: { "PAYMENT-SIGNATURE": paymentSignature(pixRequirements()) } }
+    const first = app.request("http://shop.test/relatorio", init)
+    const second = await app.request("http://shop.test/relatorio", init)
+    expect(second.status).toBe(402)
+    expect(second.headers.get("Retry-After")).toBe("2")
+    expect(second.headers.get("PAYMENT-REQUIRED")).not.toBeNull()
+    expect(decodeSettlementResponse(second.headers.get("PAYMENT-RESPONSE") ?? "").errorReason).toBe(
+      "settlement_pending",
+    )
+    verifyGate.open()
+    expect((await first).status).toBe(200)
+    expect(stub.events).toEqual(["/verify", "handler", "/settle"])
+  })
+
+  test("handler exception releases the lock: a retry verifies and runs the handler again", async () => {
+    const { app, stub } = setup()
+    const init = {
+      headers: {
+        "PAYMENT-SIGNATURE": paymentSignature(
+          pixRequirements({ resourceUrl: "http://shop.test/boom" }),
+        ),
+      },
+    }
+    expect((await app.request("http://shop.test/boom", init)).status).toBe(500)
+    expect((await app.request("http://shop.test/boom", init)).status).toBe(500)
+    expect(stub.events).toEqual(["/verify", "handler", "/verify", "handler"])
+  })
+
+  test("next() rejecting releases the lock: a retry verifies and runs the handler again", async () => {
+    const { app, stub } = setup()
+    const init = {
+      headers: {
+        "PAYMENT-SIGNATURE": paymentSignature(
+          pixRequirements({ resourceUrl: "http://shop.test/raw-throw" }),
+        ),
+      },
+    }
+    const attempt = async () => {
+      try {
+        await app.request("http://shop.test/raw-throw", init)
+        return "resolved"
+      } catch (thrown) {
+        return thrown
+      }
+    }
+    expect(await attempt()).toBe("not an Error")
+    expect(await attempt()).toBe("not an Error")
+    expect(stub.events).toEqual(["/verify", "handler", "/verify", "handler"])
+  })
+
+  test("handler 404 releases the lock", async () => {
+    const { app, stub } = setup()
+    const init = {
+      headers: {
+        "PAYMENT-SIGNATURE": paymentSignature(
+          pixRequirements({ resourceUrl: "http://shop.test/missing" }),
+        ),
+      },
+    }
+    expect((await app.request("http://shop.test/missing", init)).status).toBe(404)
+    expect((await app.request("http://shop.test/missing", init)).status).toBe(404)
+    expect(stub.callsTo("/verify")).toHaveLength(2)
+  })
+
+  test("HEAD on a paid GET route → 402, no facilitator call, handler not run", async () => {
+    const { app, stub } = setup()
+    const res = await app.request(
+      "http://shop.test/relatorio",
+      { method: "HEAD" },
+      bunEnv("1.2.3.4"),
+    )
+    expect(res.status).toBe(402)
+    expect(res.headers.get("PAYMENT-REQUIRED")).toBeNull()
+    expect(stub.events).toEqual([])
+    // The IP cap (limit 1) was not consumed.
+    expect((await app.request("http://shop.test/relatorio", {}, bunEnv("1.2.3.4"))).status).toBe(
+      402,
+    )
+    expect(stub.callsTo("/pix/charges")).toHaveLength(1)
   })
 })
