@@ -41,7 +41,7 @@ export type PaymentRequirements = z.infer<typeof PaymentRequirementsSchema>
 
 export const PixExtraSchema = z.object({
   paymentFlow: z.literal(PIX_PAYMENT_FLOW),
-  assetTransferMethod: z.literal(PIX_ASSET_TRANSFER_METHOD),
+  assetTransferMethod: z.literal(PIX_ASSET_TRANSFER_METHOD).default(PIX_ASSET_TRANSFER_METHOD),
   provider: z.string().min(1).max(64),
   resourceUrl: HttpUrlSchema,
   chargeId: z.string().min(1).max(128),

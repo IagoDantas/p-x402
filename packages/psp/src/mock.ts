@@ -1,4 +1,4 @@
-import { Px402Error } from "@p-x402/core"
+import { encodeEmv, Px402Error } from "@p-x402/core"
 import type {
   CreatePixChargeInput,
   PixCharge,
@@ -27,6 +27,7 @@ interface MockCharge {
   expiresAt: number
   externalId: string
   description: string | undefined
+  paidAt: number | undefined
 }
 
 const EVENT_NAMES: Record<Exclude<PixWebhookKind, "other">, string> = {
@@ -58,6 +59,7 @@ export interface MockPixProvider extends PixProvider {
 export function createMockPixProvider(options: MockPixProviderOptions = {}): MockPixProvider {
   const now = options.now ?? Date.now
   const secret = options.webhookSecret ?? "mock-webhook-secret"
+  if (secret.trim().length === 0) throw new Error("mock: webhookSecret must not be empty")
   const prefix = options.idPrefix ?? "pix_char_mock_"
   const charges = new Map<string, MockCharge>()
   let sink = options.onWebhook
@@ -118,6 +120,7 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
       throw new Px402Error("psp_error", `mock: cannot move ${id} from ${charge.status} to ${to}`)
     }
     charge.status = to
+    if (to === "PAID") charge.paidAt = now()
     if (sink) await sink(webhookRequest(kind, id))
   }
 
@@ -143,13 +146,14 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
         expiresAt: now() + input.expiresIn * 1000,
         externalId: input.externalId,
         description: input.description,
+        paidAt: undefined,
       }
       charges.set(id, charge)
       return {
         id,
         status: "PENDING",
         amount: input.amount,
-        brCode: `00020101021226840014br.gov.bcb.pix2562mock.p-x402.dev/${id}5204000053039865406${(input.amount / 100).toFixed(2)}5802BR6304MOCK`,
+        brCode: mockBrCode(id, input.amount),
         expiresAt: new Date(charge.expiresAt).toISOString(),
       }
     },
@@ -161,7 +165,13 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
         throw new Px402Error("psp_error", "mock: simulated PSP outage")
       }
       const charge = load(id)
-      return { id, status: charge.status, expiresAt: new Date(charge.expiresAt).toISOString() }
+      const state: PixChargeState = {
+        id,
+        status: charge.status,
+        expiresAt: new Date(charge.expiresAt).toISOString(),
+      }
+      if (charge.paidAt !== undefined) state.paidAt = new Date(charge.paidAt).toISOString()
+      return state
     },
 
     simulatePayment: (id) => transition(id, ["PENDING"], "PAID", "paid"),
@@ -179,4 +189,28 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
     },
     peek: (id) => charges.get(id),
   }
+}
+
+/** A well-formed dynamic-style BR Code (EMV, tag 54 amount, valid CRC) that no bank will accept. */
+export function mockBrCode(chargeId: string, amountCentavos: number): string {
+  const merchantAccount = encodeEmvValue([
+    { id: "00", value: "br.gov.bcb.pix" },
+    { id: "01", value: `mock-${chargeId}`.slice(0, 77) },
+  ])
+  return encodeEmv([
+    { id: "00", value: "01" },
+    { id: "01", value: "12" },
+    { id: "26", value: merchantAccount },
+    { id: "52", value: "0000" },
+    { id: "53", value: "986" },
+    { id: "54", value: (amountCentavos / 100).toFixed(2) },
+    { id: "58", value: "BR" },
+    { id: "59", value: "P-X402 MOCK" },
+    { id: "60", value: "SAO PAULO" },
+    { id: "62", value: encodeEmvValue([{ id: "05", value: chargeId.slice(-25) }]) },
+  ])
+}
+
+function encodeEmvValue(fields: { id: string; value: string }[]): string {
+  return fields.map((f) => `${f.id}${String(f.value.length).padStart(2, "0")}${f.value}`).join("")
 }

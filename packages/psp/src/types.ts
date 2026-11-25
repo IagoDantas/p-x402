@@ -36,6 +36,8 @@ export interface PixChargeState {
   id: string
   status: PixChargeStatus
   expiresAt?: string
+  /** ISO 8601 payment time, only when the PSP reports one. */
+  paidAt?: string
 }
 
 export type PixWebhookKind = "paid" | "disputed" | "refunded" | "other"

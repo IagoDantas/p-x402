@@ -83,3 +83,14 @@ describe("mock PixProvider", () => {
     )
   })
 })
+
+describe("mock BR Code", () => {
+  test("is well formed and carries the amount", async () => {
+    const { parseBrCode } = await import("@p-x402/core")
+    const mock = createMockPixProvider()
+    const c = await mock.createCharge({ amount: 500, expiresIn: 300, externalId: "e" })
+    const info = parseBrCode(c.brCode)
+    expect(info?.crcValid).toBe(true)
+    expect(info?.amount).toBe("500")
+  })
+})
