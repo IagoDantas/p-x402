@@ -449,6 +449,8 @@ p-x402/
 
 Requisito: [Bun](https://bun.sh) 1.3 ou mais novo.
 
+O passo a passo completo (como o fluxo funciona, o que cada teste cobre, teste manual com curl e próximos passos) está em [`docs/guia-mvp.md`](docs/guia-mvp.md).
+
 ```bash
 bun install
 ```
