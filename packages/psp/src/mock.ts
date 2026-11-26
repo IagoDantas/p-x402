@@ -8,7 +8,12 @@ import type {
   PixWebhookEvent,
   PixWebhookKind,
 } from "./types"
-import { parseAbacatePayWebhook, WEBHOOK_SECRET_HEADER } from "./webhook"
+import {
+  parseAbacatePayWebhook,
+  signAbacatePayWebhook,
+  WEBHOOK_SECRET_HEADER,
+  WEBHOOK_SIGNATURE_HEADER,
+} from "./webhook"
 
 export interface MockPixProviderOptions {
   now?: () => number
@@ -47,8 +52,8 @@ export interface MockPixProvider extends PixProvider {
   webhookRequest(
     kind: PixWebhookKind,
     chargeId: string,
-    options?: { secret?: string; envelopeId?: string },
-  ): Request
+    options?: { secret?: string; envelopeId?: string; signature?: string },
+  ): Promise<Request>
   setWebhookSink(sink: ((request: Request) => Promise<unknown>) | undefined): void
   /** Inspect internal state in tests. */
   peek(id: string): Readonly<MockCharge> | undefined
@@ -75,11 +80,11 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
     return charge
   }
 
-  function webhookRequest(
+  async function webhookRequest(
     kind: PixWebhookKind,
     chargeId: string,
-    opts: { secret?: string; envelopeId?: string } = {},
-  ): Request {
+    opts: { secret?: string; envelopeId?: string; signature?: string } = {},
+  ): Promise<Request> {
     const charge = charges.get(chargeId)
     const envelopeId = opts.envelopeId ?? `log_${prefix}${String(++eventSequence).padStart(4, "0")}`
     const body = {
@@ -99,13 +104,15 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
         payerInformation: { name: "Fulano de Tal", taxId: "123.***.***-00" },
       },
     }
+    const raw = JSON.stringify(body)
     return new Request("http://facilitator.local/webhooks/pix", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         [WEBHOOK_SECRET_HEADER]: opts.secret ?? secret,
+        [WEBHOOK_SIGNATURE_HEADER]: opts.signature ?? (await signAbacatePayWebhook(raw)),
       },
-      body: JSON.stringify(body),
+      body: raw,
     })
   }
 
@@ -121,7 +128,7 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
     }
     charge.status = to
     if (to === "PAID") charge.paidAt = now()
-    if (sink) await sink(webhookRequest(kind, id))
+    if (sink) await sink(await webhookRequest(kind, id))
   }
 
   return {

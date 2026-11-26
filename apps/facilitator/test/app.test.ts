@@ -825,7 +825,7 @@ for (const [storeName, makeStore] of backends) {
         const id = req.extra.chargeId
         await f.mock.simulatePayment(id)
         f.advance(5_000)
-        const res = await f.fetch(f.mock.webhookRequest("paid", id))
+        const res = await f.fetch(await f.mock.webhookRequest("paid", id))
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ ok: true, applied: true })
         expect((await f.store.get(id))?.paidAt).toBe(T0)
@@ -834,7 +834,7 @@ for (const [storeName, makeStore] of backends) {
       test("forged completed webhook while the PSP says PENDING sets no paidAt", async () => {
         const f = setup(makeStore)
         const req = await f.charge()
-        const res = await f.fetch(f.mock.webhookRequest("paid", req.extra.chargeId))
+        const res = await f.fetch(await f.mock.webhookRequest("paid", req.extra.chargeId))
         expect(res.status).toBe(200)
         expect((await f.store.get(req.extra.chargeId))?.paidAt).toBeNull()
         expect((await f.settle(f.body(req))).json.errorReason).toBe("settlement_pending")
@@ -844,10 +844,12 @@ for (const [storeName, makeStore] of backends) {
         const f = setup(makeStore)
         const req = await f.charge()
         const id = req.extra.chargeId
-        await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_dup" }))
+        await f.fetch(await f.mock.webhookRequest("paid", id, { envelopeId: "log_dup" }))
         await f.mock.simulatePayment(id)
         const calls = f.mock.calls.getCharge
-        const res = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_dup" }))
+        const res = await f.fetch(
+          await f.mock.webhookRequest("paid", id, { envelopeId: "log_dup" }),
+        )
         expect(await res.json()).toEqual({ ok: true, duplicate: true })
         expect(f.mock.calls.getCharge).toBe(calls)
         expect((await f.store.get(id))?.paidAt).toBeNull()
@@ -856,7 +858,7 @@ for (const [storeName, makeStore] of backends) {
       test("unknown charge is ignored with 200", async () => {
         const f = setup(makeStore)
         await f.charge()
-        const res = await f.fetch(f.mock.webhookRequest("paid", "pix_char_other"))
+        const res = await f.fetch(await f.mock.webhookRequest("paid", "pix_char_other"))
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ ok: true, ignored: true })
       })
@@ -867,16 +869,22 @@ for (const [storeName, makeStore] of backends) {
         const id = req.extra.chargeId
         await f.mock.simulatePayment(id)
         f.mock.failNextGetCharge(1)
-        const res = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }))
+        const res = await f.fetch(
+          await f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }),
+        )
         expect(res.status).toBe(503)
         expect((await f.store.get(id))?.paidAt).toBeNull()
         f.advance(2_000)
-        const again = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }))
+        const again = await f.fetch(
+          await f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }),
+        )
         expect(again.status).toBe(200)
         expect(await again.json()).toEqual({ ok: true, applied: true })
         expect((await f.store.get(id))?.paidAt).toBe(T0)
         // and now it is a duplicate
-        const third = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }))
+        const third = await f.fetch(
+          await f.mock.webhookRequest("paid", id, { envelopeId: "log_retry" }),
+        )
         expect(await third.json()).toEqual({ ok: true, duplicate: true })
       })
 
@@ -898,9 +906,11 @@ for (const [storeName, makeStore] of backends) {
         const id = req.extra.chargeId
         await f.mock.simulatePayment(id)
         failGet = true
-        const res = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_db" }))
+        const res = await f.fetch(await f.mock.webhookRequest("paid", id, { envelopeId: "log_db" }))
         expect(res.status).toBe(503)
-        const again = await f.fetch(f.mock.webhookRequest("paid", id, { envelopeId: "log_db" }))
+        const again = await f.fetch(
+          await f.mock.webhookRequest("paid", id, { envelopeId: "log_db" }),
+        )
         expect(await again.json()).toEqual({ ok: true, applied: true })
         expect((await f.store.get(id))?.paidAt).toBe(T0)
       })
@@ -910,7 +920,9 @@ for (const [storeName, makeStore] of backends) {
         const req = await f.charge()
         await f.mock.simulatePayment(req.extra.chargeId)
         for (const secret of ["wrong", ""]) {
-          const res = await f.fetch(f.mock.webhookRequest("paid", req.extra.chargeId, { secret }))
+          const res = await f.fetch(
+            await f.mock.webhookRequest("paid", req.extra.chargeId, { secret }),
+          )
           expect(res.status).toBe(401)
           expect(await res.json()).toEqual({ error: "invalid_webhook_secret" })
         }
@@ -937,7 +949,7 @@ for (const [storeName, makeStore] of backends) {
           getCharge: mock.getCharge,
         }
         const f = setup(makeStore, { provider: bare })
-        const res = await f.fetch(mock.webhookRequest("paid", "x"))
+        const res = await f.fetch(await mock.webhookRequest("paid", "x"))
         expect(res.status).toBe(404)
       })
 
@@ -958,7 +970,7 @@ for (const [storeName, makeStore] of backends) {
         const f = setup(makeStore)
         const req = await f.charge()
         await f.mock.simulatePayment(req.extra.chargeId)
-        const res = await f.fetch(f.mock.webhookRequest("disputed", req.extra.chargeId))
+        const res = await f.fetch(await f.mock.webhookRequest("disputed", req.extra.chargeId))
         expect(res.status).toBe(200)
         const record = await f.store.get(req.extra.chargeId)
         expect(record?.disputedAt).toBeNull()
@@ -1012,7 +1024,7 @@ for (const [storeName, makeStore] of backends) {
         const pendingVerify = f.verify(f.body(req))
         await startedP
         await mock.simulatePayment(id)
-        const res = await f.fetch(mock.webhookRequest("paid", id))
+        const res = await f.fetch(await mock.webhookRequest("paid", id))
         expect(await res.json()).toEqual({ ok: true, applied: true })
         expect((await f.store.get(id))?.paidAt).toBe(T0)
         release()

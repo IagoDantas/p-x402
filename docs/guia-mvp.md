@@ -299,13 +299,38 @@ Dois detalhes do sandbox:
 
 Para funcionar, não. O facilitator pergunta o status ao AbacatePay a cada tentativa, e essa resposta é a verdade. O webhook só acelera: avisa do pagamento, de disputas e de estornos antes da próxima tentativa.
 
-Para ligar:
+Para ligar (este caminho já foi testado com o sandbox e um túnel do cloudflared):
 
-1. Exponha o facilitator na internet. Para testar, um túnel serve, por exemplo `cloudflared tunnel --url http://localhost:4020` ou `ngrok http 4020`.
-2. No painel do AbacatePay, cadastre `https://<seu-túnel>/webhooks/pix` para os eventos `transparent.completed`, `transparent.disputed` e `transparent.refunded`.
-3. Copie o segredo que o painel gera para `ABACATEPAY_WEBHOOK_SECRET` no `.env` e reinicie o facilitator.
+1. **Crie um segredo** com pelo menos 32 caracteres. Quem escolhe o segredo é você; o AbacatePay só o repete em cada entrega:
 
-Sem o segredo, a rota `/webhooks/pix` fica desligada (responde 404) de propósito, para ninguém mandar eventos falsos.
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. **Suba o facilitator** com `ABACATEPAY_WEBHOOK_SECRET=<segredo>` no `.env`.
+3. **Exponha o facilitator na internet.** Instale o cloudflared com `brew install cloudflared` e rode:
+
+   ```bash
+   cloudflared tunnel --url http://localhost:4020
+   ```
+
+   Ele imprime uma URL `https://<nome>.trycloudflare.com`.
+4. **Cadastre o webhook**, pelo painel do AbacatePay (Integração → Webhooks → Criar, versão v2) ou pela API:
+
+   ```bash
+   curl -s -X POST https://api.abacatepay.com/v2/webhooks/create -H "authorization: Bearer $ABACATEPAY_API_KEY" -H "content-type: application/json" -d '{"name":"p-x402","endpoint":"https://<nome>.trycloudflare.com/webhooks/pix","secret":"<segredo>","events":["transparent.completed","transparent.disputed","transparent.refunded"]}'
+   ```
+
+5. **Teste:** pague uma cobrança com `simulate-payment`. Em um ou dois segundos o AbacatePay manda o `transparent.completed`, e o facilitator responde `{"ok":true,"applied":true}`.
+
+O facilitator confere duas coisas em cada entrega:
+
+- o segredo, comparado em tempo constante, que prova a origem;
+- o `X-Webhook-Signature` (HMAC-SHA256 do corpo com a chave pública do AbacatePay), que prova que o corpo não foi alterado.
+
+Sem segredo configurado, a rota `/webhooks/pix` fica desligada (responde 404) de propósito, para ninguém mandar eventos falsos.
+
+Webhooks não podem ser editados no AbacatePay. Para mudar a URL (por exemplo, depois de reiniciar o túnel rápido, que troca de endereço), crie outro e apague o antigo com `POST /v2/webhooks/delete`.
 
 ---
 
@@ -321,7 +346,7 @@ Faltam cinco dias. A ordem abaixo prioriza ter uma demo sólida e o PR entregue;
 
 ### Amanhã: o que deixa a demo convincente
 
-4. **Webhook com túnel** (seção 5.4). Confirme que o evento `transparent.completed` chega e é aceito. Ainda não sabemos o formato exato dos eventos de disputa e estorno no AbacatePay, nem o que os status `APPROVED` e `REDEEMED` significam (hoje são tratados como "não pago"). Se der, pergunte no suporte ou na comunidade deles.
+4. **Webhook:** já está testado com o sandbox (seção 5.4). Falta ver chegar um evento de estorno de verdade. Disputas não têm simulação no modo dev. Pela documentação, `APPROVED` é o status de cartão antes de virar `PAID`, então tratar como "não pago" está correto para Pix.
 5. **Um pagador "humano"** para a demo: em vez do `simulatePayer`, um pagador que mostra o QR Code no terminal e espera a pessoa pagar no app do banco. A interface é pequena:
 
    ```ts
@@ -345,7 +370,7 @@ SDKs em outras linguagens, adapters para outros frameworks, geração de OpenAPI
 
 - A trava por cobrança e os limites de taxa ficam em memória, por processo. Com mais de uma instância do vendedor, é preciso roteamento fixo por cobrança.
 - Uma resposta em streaming que falhe no meio já foi liquidada.
-- O `X-Webhook-Signature` do AbacatePay não é verificado (falta a chave pública deles). A origem do webhook é provada pelo segredo, que é comparado em tempo constante.
+- O túnel rápido do cloudflared (`trycloudflare.com`) muda de URL a cada reinício. O webhook cadastrado para ele para de funcionar quando o túnel cai. Para uma URL fixa, use um túnel nomeado na conta Cloudflare do time ou publique o facilitator.
 - Só foi testado no Bun. Node, Deno e Workers devem funcionar para as bibliotecas, mas ninguém rodou.
 
 ---

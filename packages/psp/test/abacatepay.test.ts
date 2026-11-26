@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { type FetchLike, isPx402Error, type Px402ErrorCode } from "@p-x402/core"
-import { createAbacatePayProvider, type PixProvider } from "../src"
+import { createAbacatePayProvider, type PixProvider, signAbacatePayWebhook } from "../src"
 
 const KEY = "abc_test_SECRETKEY123"
 const BASE = "https://api.abacatepay.test/v2"
@@ -306,13 +306,20 @@ describe("AbacatePay provider", () => {
   describe("webhooks", () => {
     const SECRET = "whsec_test"
 
-    function hook(body: unknown, secret: string | null = SECRET): Request {
+    async function hook(
+      body: unknown,
+      secret: string | null = SECRET,
+      signature?: string | null,
+    ): Promise<Request> {
+      const raw = typeof body === "string" ? body : JSON.stringify(body)
       const headers: Record<string, string> = { "content-type": "application/json" }
       if (secret !== null) headers["X-Webhook-Secret"] = secret
+      const sig = signature === undefined ? await signAbacatePayWebhook(raw) : signature
+      if (sig !== null) headers["X-Webhook-Signature"] = sig
       return new Request("http://facilitator.local/webhooks/pix", {
         method: "POST",
         headers,
-        body: typeof body === "string" ? body : JSON.stringify(body),
+        body: raw,
       })
     }
 
@@ -344,7 +351,7 @@ describe("AbacatePay provider", () => {
     })
 
     test("transparent.completed parses and drops payer data", async () => {
-      const event = await withSecret().parseWebhook?.(hook(envelope("transparent.completed")))
+      const event = await withSecret().parseWebhook?.(await hook(envelope("transparent.completed")))
       expect(event).toEqual({
         id: "log_123",
         kind: "paid",
@@ -361,7 +368,7 @@ describe("AbacatePay provider", () => {
         ["transparent.refunded", "refunded"],
         ["billing.paid", "other"],
       ] as const) {
-        const parsed = await p.parseWebhook?.(hook(envelope(event)))
+        const parsed = await p.parseWebhook?.(await hook(envelope(event)))
         expect(parsed).toEqual({ id: "log_123", kind, event, chargeId: "pix_char_abc123" })
         expect(JSON.stringify(parsed)).not.toContain("Fulano")
       }
@@ -372,16 +379,34 @@ describe("AbacatePay provider", () => {
       const parse = p.parseWebhook
       if (!parse) throw new Error("parseWebhook missing")
       const body = envelope("transparent.completed")
-      await expectCode(parse(hook(body, "wrong")), "invalid_webhook_secret")
-      await expectCode(parse(hook(body, "")), "invalid_webhook_secret")
-      await expectCode(parse(hook(body, null)), "invalid_webhook_secret")
+      await expectCode(parse(await hook(body, "wrong")), "invalid_webhook_secret")
+      await expectCode(parse(await hook(body, "")), "invalid_webhook_secret")
+      await expectCode(parse(await hook(body, null)), "invalid_webhook_secret")
+    })
+
+    test("signature: matches an independent HMAC vector (openssl) for the published key", async () => {
+      const body =
+        '{"id":"log_vector","event":"transparent.completed","data":{"transparent":{"id":"pix_char_vector"}}}'
+      expect(await signAbacatePayWebhook(body)).toBe("UlCgcsmHcJ2QXJPxci1h0BrrbEvXt3WhAMR2FFQU0o4=")
+    })
+
+    test("missing or wrong signature, or a body changed after signing, is rejected", async () => {
+      const parse = withSecret().parseWebhook
+      if (!parse) throw new Error("parseWebhook missing")
+      const body = envelope("transparent.completed")
+      await expectCode(parse(await hook(body, SECRET, null)), "invalid_webhook_payload")
+      await expectCode(parse(await hook(body, SECRET, "AAAA")), "invalid_webhook_payload")
+      const otherSignature = await signAbacatePayWebhook(
+        JSON.stringify(envelope("transparent.refunded")),
+      )
+      await expectCode(parse(await hook(body, SECRET, otherSignature)), "invalid_webhook_payload")
     })
 
     test("malformed body is rejected", async () => {
       const parse = withSecret().parseWebhook
       if (!parse) throw new Error("parseWebhook missing")
-      await expectCode(parse(hook("{nope")), "invalid_webhook_payload")
-      await expectCode(parse(hook({ event: "x" })), "invalid_webhook_payload")
+      await expectCode(parse(await hook("{nope")), "invalid_webhook_payload")
+      await expectCode(parse(await hook({ event: "x" })), "invalid_webhook_payload")
     })
   })
 })

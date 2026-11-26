@@ -239,7 +239,7 @@ Webhook do AbacatePay:
 
 - O `X-Webhook-Secret` é comparado em tempo constante.
 - Eventos repetidos são descartados pelo `id` do evento (`log_...`), que se repete nas retentativas.
-- O `X-Webhook-Signature` usa uma chave pública fixa e garante só a integridade do corpo, não a origem.
+- O `X-Webhook-Signature` (HMAC-SHA256 com a chave pública fixa do AbacatePay) precisa bater com o corpo. Ele garante só a integridade, não a origem; a origem vem do segredo.
 
 Por padrão, dados do pagador (nome, CPF mascarado) não são repassados ao vendedor (LGPD).
 
@@ -493,7 +493,7 @@ bun run dev:server
 bun run demo
 ```
 
-Com o `.env.example`, o facilitator usa o PSP mock, grava as cobranças em `p-x402.sqlite` e libera a rota de desenvolvimento `POST /dev/charges/:id/simulate-payment`, que o `simulatePayer` do cliente usa para "pagar". Para o AbacatePay, use `PX402_PROVIDER=abacatepay` com `ABACATEPAY_API_KEY` e `ABACATEPAY_WEBHOOK_SECRET`. O adapter já foi testado contra o modo dev do AbacatePay: criar, consultar e simular pagamento funcionam de ponta a ponta. Dois detalhes do modo dev: o status leva alguns segundos para virar `PAID` depois do `simulate-payment`, e o BR Code devolvido não é um EMV válido. Por isso o `simulatePayer`, que nunca paga o BR Code, dispensa a checagem dele. O webhook só funciona com uma URL pública cadastrada no painel do AbacatePay; sem ele o fluxo funciona igual, só um pouco mais lento, porque o facilitator consulta o PSP a cada tentativa.
+Com o `.env.example`, o facilitator usa o PSP mock, grava as cobranças em `p-x402.sqlite` e libera a rota de desenvolvimento `POST /dev/charges/:id/simulate-payment`, que o `simulatePayer` do cliente usa para "pagar". Para o AbacatePay, use `PX402_PROVIDER=abacatepay` com `ABACATEPAY_API_KEY` e `ABACATEPAY_WEBHOOK_SECRET`. O adapter já foi testado contra o modo dev do AbacatePay: criar, consultar e simular pagamento funcionam de ponta a ponta. Dois detalhes do modo dev: o status leva alguns segundos para virar `PAID` depois do `simulate-payment`, e o BR Code devolvido não é um EMV válido. Por isso o `simulatePayer`, que nunca paga o BR Code, dispensa a checagem dele. O webhook também foi testado no sandbox, por um túnel do cloudflared (passo a passo em [`docs/guia-mvp.md`](docs/guia-mvp.md)). Sem webhook o fluxo funciona igual, só um pouco mais lento, porque o facilitator consulta o PSP a cada tentativa.
 
 Limites conhecidos desta versão:
 
@@ -525,7 +525,8 @@ Limites conhecidos desta versão:
 - [ ] payer de terminal (QR) e payer via API bancária
 - [x] E2E: exemplo Hono → facilitator → client, com mock
 - [x] Integração com o modo dev do AbacatePay (`simulate-payment`)
-- [ ] Webhook do AbacatePay com URL pública (túnel ou deploy)
+- [x] Webhook do AbacatePay (testado no sandbox via túnel do cloudflared)
+- [ ] Webhook com URL fixa (túnel nomeado ou deploy)
 - [ ] Build (tsdown), changesets, CI em matriz e docs
 - [ ] `spec/`: JSON Schema, OpenAPI, test-vectors e conformidade em Docker
 - [ ] SDK Python

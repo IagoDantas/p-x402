@@ -80,17 +80,31 @@ describe("mock PixProvider", () => {
     const b = createMockPixProvider({ idPrefix: "pix_char_b_" })
     const ca = await a.createCharge({ amount: 500, expiresIn: 300, externalId: "e" })
     const cb = await b.createCharge({ amount: 500, expiresIn: 300, externalId: "e" })
-    const ea = await a.parseWebhook(a.webhookRequest("paid", ca.id))
-    const eb = await b.parseWebhook(b.webhookRequest("paid", cb.id))
+    const ea = await a.parseWebhook(await a.webhookRequest("paid", ca.id))
+    const eb = await b.parseWebhook(await b.webhookRequest("paid", cb.id))
     expect(ea.id).toBe("log_pix_char_a_0001")
     expect(eb.id).toBe("log_pix_char_b_0001")
-    expect((await a.parseWebhook(a.webhookRequest("paid", ca.id))).id).toBe("log_pix_char_a_0002")
+    expect((await a.parseWebhook(await a.webhookRequest("paid", ca.id))).id).toBe(
+      "log_pix_char_a_0002",
+    )
+  })
+
+  test("webhooks are signed like AbacatePay's; a tampered signature is rejected", async () => {
+    const mock = createMockPixProvider()
+    const c = await mock.createCharge({ amount: 500, expiresIn: 300, externalId: "e" })
+    const request = await mock.webhookRequest("paid", c.id)
+    expect(request.headers.get("X-Webhook-Signature")).toMatch(/^[A-Za-z0-9+/]{43}=$/)
+    expect((await mock.parseWebhook(request)).kind).toBe("paid")
+    await expectCode(
+      mock.parseWebhook(await mock.webhookRequest("paid", c.id, { signature: "AAAA" })),
+      "invalid_webhook_payload",
+    )
   })
 
   test("webhook with a wrong secret is rejected", async () => {
     const mock = createMockPixProvider({ webhookSecret: "right" })
     await expectCode(
-      mock.parseWebhook(mock.webhookRequest("paid", "pix_char_x", { secret: "wrong" })),
+      mock.parseWebhook(await mock.webhookRequest("paid", "pix_char_x", { secret: "wrong" })),
       "invalid_webhook_secret",
     )
   })
