@@ -1,22 +1,61 @@
-# Roteiro do vídeo do rascunho (~3 min)
+# Roteiro — vídeo do rascunho inicial p-x402
 
-Gravado em cima da landing page (`docs/index.html`). Cada seção da página é uma cena, e **cada integrante aparece na câmera** em pelo menos uma delas, que é uma exigência do formulário.
+**Duração:** ~3 min · **Trilha:** Pagamentos & finanças · **Formato:** time na câmera, sem demo
 
-Formato sugerido: tela compartilhada com a página e a webcam no canto (Loom ou OBS). Role a página até a seção da cena enquanto fala.
+---
 
-| Tempo | Cena / seção | Quem | Fala (rascunho) |
-| --- | --- | --- | --- |
-| 0:00–0:25 | 1 · `#inicio` (hero, janela de demo rodando) | Integrante 1 | "O HTTP tem um status, o 402 Payment Required, que existe desde o começo da web e nunca ganhou significado. A gente deu um: Pix. Olha a demo: a API responde 402 com um Pix, o agente paga e recebe o recurso." |
-| 0:25–0:55 | 2 · `#problema` | Integrante 1 | "Hoje, para usar uma API paga no Brasil, você cria conta, aceita contrato, gera chave e recarrega saldo num painel. Um agente de IA não faz isso sozinho. E as poucas APIs que aceitam agentes cobram em cripto." |
-| 0:55–1:40 | 3 · `#como` | Integrante 2 | "O p-x402 segue o padrão aberto x402. São quatro passos: pede, recebe um 402 com um Pix, paga, recebe o recurso com recibo. Quem vende põe um middleware e um preço na rota. Quem compra usa um fetch que entende 402. E como o protocolo é uma spec aberta, o SDK de qualquer linguagem sai dela: começamos pelo TypeScript." |
-| 1:40–2:10 | 4 · `#conta` | Integrante 2 ou 3 | "Por que não um Pix por chamada? A tarifa do Pix é fixa. Numa chamada de cinco centavos, é impossível. A saída é crédito pré-pago: com um depósito de vinte reais, a tarifa cai para 4%. É a nossa próxima etapa." |
-| 2:10–2:40 | 5 · `#seguranca` | Integrante 3 | "Segurança: o mesmo Pix nunca paga duas vezes, valor e recurso ficam amarrados ao pagamento e tudo é reconfirmado no PSP. E o mais importante: o dinheiro nunca passa pela gente, ele cai direto na conta do vendedor." |
-| 2:40–3:00 | 6 · `#time` | Todos | Cada um diz o nome. Fecho: "p-x402: o 402 com Pix, para agentes pagarem APIs brasileiras em reais." |
+## 1. Hook · 0:00–0:25 · Henrique
 
-## Checklist antes de gravar
+_Tela: só a pessoa falando. Em "x402", aparecem os logos dos apoiadores ou o texto "x402 · Linux Foundation"._
 
-- [x] Nomes preenchidos na seção `#time` da página
-- [ ] Página publicada em HTTPS (GitHub Pages)
-- [ ] Cada integrante aparece na câmera
-- [ ] Vídeo público ou não listado (privado não vale)
-- [ ] Duração por volta de 3 min
+> "Era da IA, elas escrevem código, pesquisam e tomam decisões, mas travam em um simples formulário de cadastro.
+> Pra resolver isso, Google, Visa, Mastercard e a Linux Foundation se juntaram num padrão: o x402, que deixa agentes de IA pagarem direto pela internet.
+> Só que em cripto.
+> Mas e o Pix? E o Brasil?"
+
+## 2. Problema · 0:25–1:05 · Rafael
+
+_Tela: os números aparecem em destaque conforme a fala._
+
+> "O Pix está em **89% da população adulta**: são 154 milhões de pessoas e 14 milhões de empresas.
+> Só em 2026, até outubro, foram **76 bilhões de transações**. E nos 3 minutos deste vídeo, **cerca de 500 mil Pix** vão ser feitos no Brasil.
+> Mesmo assim, o padrão mundial de pagamento entre máquinas não fala Pix.
+> Hoje, para uma IA comprar um único dado de uma API brasileira, ela precisa de conta, cartão e chave de acesso, coisas que só um humano consegue criar.
+> E para quem quer vender por centavos, o custo de cadastro e de cobrança simplesmente não fecha."
+
+## 3. Solução e como faremos · 1:05–2:25 · Iago
+
+_Tela: diagrama simples do fluxo: pedido → resposta 402 com Pix → pagamento → recurso + recibo._
+
+> "Por isso criamos o **p-x402**: compatível com o x402, mas trocando a cripto pelo Pix.
+> Funciona assim: alguém pede um recurso pago, e a API responde com uma cobrança Pix, com QR code, valor, validade e uma oferta assinada que mostra para quem você está pagando.
+> O cliente, seja uma pessoa ou uma IA, paga. O banco do vendedor confirma na hora, e o recurso é liberado junto com um recibo.
+> Não tem cadastro nem chave de acesso. O dinheiro cai direto na conta de quem vende: a gente nunca segura o valor.
+> Vamos entregar um protocolo aberto, um kit para quem vende integrar na própria API e um cliente que paga sozinho. Para pagamentos de centavos, o modelo é de crédito pré-pago por sessão: deposita uma vez e consome aos poucos."
+
+## 4. Fechamento · 2:25–3:00 · todos
+
+_Tela: os três juntos, ou em sequência rápida._
+
+> **Henrique:** "O mundo já decidiu como as máquinas vão pagar."
+> **Rafael:** "A gente quer que o Brasil pague com Pix."
+> **Iago:** "Esse é o p-x402."
+>
+> _(Cada um, olhando para a câmera:)_ "Eu sou o Henrique." / "Eu sou o Rafael." / "Eu sou o Iago."
+
+_Tela final:_ **p-x402.com** · **github.com/IagoDantas/p-x402**
+
+---
+
+## Fontes dos dados (conferidas em 26/11/2026)
+
+- **x402 na Linux Foundation** (lançada em 02/04/2026; apoio de AWS, American Express, Cloudflare, Google, Mastercard, Stripe, Visa e outros): [Linux Foundation](https://www.linuxfoundation.org/press/linux-foundation-is-launching-the-x402-foundation-and-welcoming-the-contribution-of-the-x402-protocol), [lançamento operacional](https://www.linuxfoundation.org/press/linux-foundation-announces-operational-launch-of-x402-foundation-to-standardize-internet-native-payments-for-ai-agents-and-applications)
+- **x402 em cripto** (pagamentos em stablecoin, principalmente USDC): [Coinbase](https://www.coinbase.com/developer-platform/discover/launches/x402), [Stripe docs](https://docs.stripe.com/payments/machine/x402)
+- **154 mi de usuários PF (89% dos adultos), 14 mi de PJ, 76 bi de transações jan–out/2026:** [Agência Gov, com dados do BCB](https://agenciagov.ebc.com.br/noticias/202611/pix-celebra-6-anos-como-motor-de-inclusao-e-eficiencia-financeira-em-todo-o-brasil)
+- **"Cerca de 500 mil Pix em 3 minutos":** estimativa nossa. 76 bi ÷ 304 dias (jan–out) ≈ 250 mi/dia ≈ 174 mil/min → ≈ 520 mil em 3 min.
+
+## Lembretes
+
+- Não chamar o produto de "Pix". O certo é "p-x402, que usa Pix" (a marca é do BCB).
+- Os três precisam aparecer na câmera (requisito do rascunho).
+- Se passar de 3 min, cortem primeiro a última frase do problema ("custo de cadastro...").

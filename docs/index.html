@@ -235,6 +235,17 @@
   .member h3 { margin: 0; font: 600 26px/1.1 var(--display); letter-spacing: -.03em; }
   @media (max-width: 860px) { .team { grid-template-columns: 1fr; } }
 
+  .stats-lede { margin: 96px 0 28px; max-width: 760px; font: 500 22px/1.4 var(--display); letter-spacing: -.02em; }
+  .stats-lede span { color: var(--green); }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .stat { border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
+  .stat b { display: block; font: 600 40px/1 var(--display); letter-spacing: -.03em; color: var(--green); margin-bottom: 12px; }
+  .stat span { color: var(--muted); font-size: var(--fs-small); }
+  .stats-src { margin-top: 16px; font-size: var(--fs-small); color: var(--muted); }
+  .stats-src a { color: var(--text-2); }
+  .stats > * { min-width: 0; }
+  @media (max-width: 860px) { .stats { grid-template-columns: 1fr 1fr; } }
+
   .final { text-align: center; padding: 150px 0 140px; position: relative; isolation: isolate; }
   .final h2 { max-width: 820px; margin: 0 auto 32px; }
   .final .hero-ctas { justify-content: center; }
@@ -354,6 +365,15 @@
         <p>As APIs brasileiras que já aceitam agentes cobram em stablecoin, não em reais.</p>
       </div>
     </div>
+
+    <p class="stats-lede rv">O padrão mundial para agentes pagarem já existe: o x402, hoje na Linux Foundation, com Google, Visa e Mastercard. <span>Só que em cripto. E o Pix?</span></p>
+    <div class="stats">
+      <div class="stat rv"><b>89%</b><span>dos adultos brasileiros usam Pix</span></div>
+      <div class="stat rv d1"><b>154 mi</b><span>pessoas e 14 mi de empresas</span></div>
+      <div class="stat rv d2"><b>76 bi</b><span>de transações em 2026, até outubro</span></div>
+      <div class="stat rv d3"><b>~500 mil</b><span>Pix a cada 3 minutos</span></div>
+    </div>
+    <p class="stats-src rv">Fonte: Banco Central, via <a href="https://agenciagov.ebc.com.br/noticias/202611/pix-celebra-6-anos-como-motor-de-inclusao-e-eficiencia-financeira-em-todo-o-brasil">Agência Gov</a> (dados de out/2026). A média por 3 minutos é uma estimativa a partir desses dados.</p>
   </div>
 </section>
 
