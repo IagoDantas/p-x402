@@ -529,7 +529,7 @@ function onServerEvent(event: ServerEvent, arrived: number) {
       side: "psp",
       tone: "ok",
       title: "PSP confirmou o Pix · loja avisada",
-      note: `Webhook do PSP → facilitator → evento SSE para a loja. Pix enviado → loja avisada em <b>${latencyMs === undefined ? "–" : ms(latencyMs)}</b>.`,
+      note: `O facilitator registrou o Pix como pago (pelo webhook ou consultando o PSP) e a loja recebeu o evento por SSE. Pix enviado → loja avisada em <b>${latencyMs === undefined ? "–" : ms(latencyMs)}</b>.`,
       pill: { text: latencyMs === undefined ? ms(pushMs) : ms(latencyMs), fast: true },
     })
     renderFeed()
