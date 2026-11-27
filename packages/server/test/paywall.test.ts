@@ -118,6 +118,24 @@ describe("first request", () => {
     expect(stub.calls).toHaveLength(0)
   })
 
+  test("invalid route description, mimeType or resource throws invalid_request without calling the facilitator", async () => {
+    const { stub, paywall } = setup()
+    for (const bad of [
+      { description: "a".repeat(141) },
+      { mimeType: "a".repeat(201) },
+      { resource: "ftp://x" },
+    ]) {
+      const err = await paywall
+        .handle(new Request(URL_RELATORIO), { ...route, ...bad }, { clientIp: "1.2.3.4" })
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        )
+      expect(isPx402Error(err) && err.code).toBe("invalid_request")
+    }
+    expect(stub.calls).toHaveLength(0)
+  })
+
   test("resourceUrl strips fragment and userinfo", async () => {
     const { stub, paywall } = setup()
     await paywall.handle(new Request("http://user:pw@shop.test/a?b=1#c"), route, {
@@ -145,6 +163,16 @@ describe("first request", () => {
     )
     const required = decodePaymentRequired(res.headers.get("PAYMENT-REQUIRED") ?? "")
     expect(required.resource.url).toBe("https://api.shop.test/relatorio?q=2")
+    expect(chargeUrl(stub.calls[0]?.body)).toBe("https://api.shop.test/relatorio?q=2")
+  })
+
+  test("publicOrigin wins over route.resource", async () => {
+    const { stub, paywall } = setup({ publicOrigin: "https://api.shop.test" })
+    await paywall.handle(
+      new Request("http://127.0.0.1:3000/relatorio?q=2"),
+      { ...route, resource: "https://other.test/x" },
+      { clientIp: "1.2.3.4" },
+    )
     expect(chargeUrl(stub.calls[0]?.body)).toBe("https://api.shop.test/relatorio?q=2")
   })
 
@@ -262,6 +290,20 @@ describe("facilitator errors on /pix/charges", () => {
         await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }),
       )
       expect(res.status).toBe(502)
+      const settlement = decodeSettlementResponse(res.headers.get("PAYMENT-RESPONSE") ?? "")
+      expect(settlement.errorReason).toBe("facilitator_error")
+    }
+  })
+
+  test("requirements for another amount or resource → 502 facilitator_error", async () => {
+    const { stub, paywall } = setup()
+    for (const overrides of [{ amount: "600" }, { resourceUrl: "https://other.test/x" }]) {
+      stub.reply("/pix/charges", stub.json({ paymentRequirements: pixRequirements(overrides) }))
+      const res = response(
+        await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }),
+      )
+      expect(res.status).toBe(502)
+      expect(res.headers.get("PAYMENT-REQUIRED")).toBeNull()
       const settlement = decodeSettlementResponse(res.headers.get("PAYMENT-RESPONSE") ?? "")
       expect(settlement.errorReason).toBe("facilitator_error")
     }

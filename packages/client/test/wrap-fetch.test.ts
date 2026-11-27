@@ -160,6 +160,28 @@ describe("wrapFetch", () => {
     expect(signatures[0]).not.toBeNull()
   })
 
+  test("settlement_pending with an HTTP-date Retry-After sleeps until that date", async () => {
+    const clock = fakeClock()
+    const server = scriptedServer((attempt, _request, seen) => {
+      if (seen.signature === null) return challenge(paymentRequired([pixRequirements()]))
+      if (attempt === 1) {
+        const at = new Date(clock.now() + 3000).toUTCString()
+        return refused("settlement_pending", "pix_char_mock_0001", at)
+      }
+      return new Response("ok")
+    })
+    const { payer } = countingPayer()
+    const paid = wrapFetch(server.fetch, {
+      payer,
+      now: clock.now,
+      sleep: clock.sleep,
+      retry: { initialDelayMs: 500 },
+    })
+    expect((await paid(RESOURCE)).status).toBe(200)
+    // max(Retry-After 3000, backoff 500)
+    expect(clock.sleeps).toEqual([3000])
+  })
+
   test("pending past expiresAt -> payment_timeout with details", async () => {
     const server = scriptedServer((_attempt, _request, seen) =>
       seen.signature === null
@@ -255,6 +277,49 @@ describe("wrapFetch", () => {
     expect(charges).toHaveLength(1)
     expect(server.seen.length - before).toBe(1)
     expect(paid.spent).toBe(500)
+  })
+
+  test("an amount equal to the default maxPerRequest is paid", async () => {
+    const server = simplePaywall(pixRequirements({ amount: "1000" }))
+    const { payer, charges } = countingPayer()
+    const paid = wrapFetch(server.fetch, { payer })
+    expect((await paid(RESOURCE)).status).toBe(200)
+    expect(charges).toHaveLength(1)
+    expect(paid.spent).toBe(1000)
+  })
+
+  test("maxTotal is inclusive: two 500 charges fill 1000, a third is refused", async () => {
+    const server = scriptedServer((attempt, _r, seen) =>
+      seen.signature === null
+        ? challenge(paymentRequired([pixRequirements({ chargeId: `pix_char_${attempt}` })]))
+        : new Response("ok"),
+    )
+    const { payer, charges } = countingPayer()
+    const paid = wrapFetch(server.fetch, { payer, policy: { maxTotal: 1000 } })
+    expect((await paid(RESOURCE)).status).toBe(200)
+    expect((await paid(RESOURCE)).status).toBe(200)
+    expect(paid.spent).toBe(1000)
+    const error = await caught(paid(RESOURCE))
+    expect(error.code).toBe("policy_exceeded")
+    expect(error.details?.reason).toBe("max_total")
+    expect(new Set(charges.map((c) => c.chargeId)).size).toBe(2)
+    expect(paid.spent).toBe(1000)
+  })
+
+  test("an onPayment hook that throws does not lose the paid request", async () => {
+    const server = simplePaywall()
+    const { payer, charges } = countingPayer()
+    const paid = wrapFetch(server.fetch, {
+      payer,
+      onPayment: () => {
+        throw new Error("logger down")
+      },
+    })
+    const response = await paid(RESOURCE)
+    expect(response.status).toBe(200)
+    expect(charges).toHaveLength(1)
+    expect(paid.spent).toBe(500)
+    expect(server.seen[1]?.signature).not.toBeNull()
   })
 
   test("origin not in allowedOrigins is refused (full origin or bare host)", async () => {

@@ -400,6 +400,43 @@ describe("AbacatePay provider", () => {
       }
     })
 
+    test("charge events signed without data.transparent.id are rejected", async () => {
+      const parse = withSecret().parseWebhook
+      if (!parse) throw new Error("parseWebhook missing")
+      for (const event of [
+        "transparent.completed",
+        "transparent.disputed",
+        "transparent.refunded",
+      ]) {
+        const body = { ...envelope(event), data: {} }
+        await expectCode(parse(await hook(body)), "invalid_webhook_payload")
+      }
+    })
+
+    test("an other event without data has no chargeId", async () => {
+      const { data: _data, ...body } = envelope("billing.paid")
+      const event = await withSecret().parseWebhook?.(await hook(body))
+      expect(event).toEqual({ id: "log_123", kind: "other", event: "billing.paid" })
+      expect(event && "chargeId" in event).toBe(false)
+    })
+
+    test("the event carries only id, kind, event and chargeId, never customer or payer data", async () => {
+      const p = withSecret()
+      for (const name of [
+        "transparent.completed",
+        "transparent.disputed",
+        "transparent.refunded",
+        "billing.paid",
+      ]) {
+        const event = await p.parseWebhook?.(await hook(envelope(name)))
+        expect(Object.keys(event ?? {}).sort()).toEqual(["chargeId", "event", "id", "kind"])
+        const text = JSON.stringify(event)
+        for (const leak of ["customer", "payerInformation", "taxId", "Fulano"]) {
+          expect(text).not.toContain(leak)
+        }
+      }
+    })
+
     test("wrong or empty secret header is rejected", async () => {
       const p = withSecret()
       const parse = p.parseWebhook
