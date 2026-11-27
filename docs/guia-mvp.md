@@ -87,7 +87,9 @@ Proteções extras, que vieram da revisão adversária:
 - **Proteções do cliente:**
   - não paga se a resposta veio de um redirecionamento;
   - não paga se a URL do recurso é de outro domínio;
-  - não paga se o valor dentro do BR Code é diferente do anunciado.
+  - não paga se o valor dentro do BR Code é diferente do anunciado;
+  - não paga um BR Code com tag repetida (cada banco leria um valor diferente);
+  - não paga um BR Code dinâmico (com URL de location), porque o valor de verdade está atrás da URL, a não ser que o pagador declare `checksDynamicAmount: true` e confira esse valor ele mesmo.
 - **Dados do pagador** (nome, CPF) que chegam no webhook nunca são gravados nem repassados (LGPD).
 
 ### Os três headers

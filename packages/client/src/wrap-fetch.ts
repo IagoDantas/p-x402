@@ -124,7 +124,9 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
         origin: requestUrl.origin,
       })
     }
-    if (options.payer.paysBrCode !== false) checkBrCode(extra.brCode, amount)
+    if (payer.paysBrCode !== false) {
+      checkBrCode(extra.brCode, amount, payer.checksDynamicAmount === true)
+    }
     const value = Number(amount)
     if (value > maxPerRequest) {
       throw new Px402Error("policy_exceeded", "amount above maxPerRequest", {
@@ -237,11 +239,16 @@ function originAllowed(url: URL, allowed: string[]): boolean {
   })
 }
 
-function checkBrCode(brCode: string, amount: string): void {
+function checkBrCode(brCode: string, amount: string, payerChecksDynamic: boolean): void {
   const info = parseBrCode(brCode)
   const fail = (reason: string, message: string) =>
     new Px402Error("invalid_payment_requirements", message, { reason, amount })
   if (!info?.crcValid) throw fail("brcode_invalid", "BR Code is malformed or has a bad CRC")
+  // Tag 54 of a dynamic code is not what the bank charges: only a payer that checks the resolved
+  // amount may pay one.
+  if (info.hasLocation && !payerChecksDynamic) {
+    throw fail("brcode_dynamic_unverified", "BR Code is dynamic; its amount cannot be checked here")
+  }
   if (info.amount === undefined) throw fail("brcode_amount_missing", "BR Code has no amount")
   if (info.amount !== amount) {
     throw fail(

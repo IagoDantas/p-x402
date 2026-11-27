@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { decodePaymentPayload, isPx402Error, type Px402Error } from "@p-x402/core"
+import {
+  decodePaymentPayload,
+  encodeEmv,
+  encodeTlv,
+  isPx402Error,
+  type Px402Error,
+} from "@p-x402/core"
 import { type PaymentEvent, wrapFetch } from "../src"
 import {
   brCode,
@@ -257,6 +263,34 @@ describe("wrapFetch", () => {
     expect(charges).toHaveLength(0)
     expect(server.seen).toHaveLength(1)
     expect(paid.spent).toBe(0)
+  })
+
+  test("a dynamic BR Code is refused unless the payer checks the resolved amount", async () => {
+    // Tag 54 says 5.00, but a bank pays what the location payload says.
+    const dynamic = encodeEmv([
+      { id: "00", value: "01" },
+      {
+        id: "26",
+        value: encodeTlv([
+          { id: "00", value: "br.gov.bcb.pix" },
+          { id: "25", value: "pix.example.com/qr/v2/cob/abc" },
+        ]),
+      },
+      { id: "53", value: "986" },
+      { id: "54", value: "5.00" },
+      { id: "58", value: "BR" },
+    ])
+    const server = simplePaywall(pixRequirements({ extra: { brCode: dynamic } }))
+    const { payer, charges } = countingPayer()
+    const error = await caught(wrapFetch(server.fetch, { payer })(RESOURCE))
+    expect(error.code).toBe("invalid_payment_requirements")
+    expect(error.details?.reason).toBe("brcode_dynamic_unverified")
+    expect(charges).toHaveLength(0)
+
+    const checking = { checksDynamicAmount: true, pay: payer.pay }
+    const response = await wrapFetch(server.fetch, { payer: checking })(RESOURCE)
+    expect(response.status).toBe(200)
+    expect(charges).toHaveLength(1)
   })
 
   test("a payer that never pays the BR Code (simulate) skips the BR Code check, not the policy", async () => {
