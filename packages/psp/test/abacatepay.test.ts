@@ -341,6 +341,14 @@ describe("AbacatePay provider", () => {
       return provider(stub(() => json({})).fetch, { webhookSecret: SECRET })
     }
 
+    test.each(["constructor", "toString", "__proto__"])(
+      "an event named %s is kind other, not a prototype member",
+      async (event) => {
+        const parsed = await withSecret().parseWebhook?.(await hook({ id: "log_9", event }))
+        expect(parsed).toEqual({ id: "log_9", kind: "other", event })
+      },
+    )
+
     test("the size limit counts UTF-8 bytes, not characters, when no content-length is sent", async () => {
       // 40 000 "é" = 40 000 characters but 80 000 bytes.
       const raw = JSON.stringify({ ...envelope("transparent.completed"), pad: "é".repeat(40_000) })

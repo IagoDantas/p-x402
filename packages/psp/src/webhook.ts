@@ -89,7 +89,10 @@ export async function parseAbacatePayWebhook(
     throw new Px402Error("invalid_webhook_payload", "webhook envelope has an unexpected shape")
   }
   const envelope = parsed.data
-  const kind = EVENT_KINDS[envelope.event] ?? "other"
+  // hasOwn: an event named "constructor" or "toString" must not resolve to a prototype member.
+  const kind = Object.hasOwn(EVENT_KINDS, envelope.event)
+    ? (EVENT_KINDS[envelope.event] ?? "other")
+    : "other"
   const chargeId = envelope.data?.transparent?.id
   if (kind !== "other" && chargeId === undefined) {
     throw new Px402Error("invalid_webhook_payload", `${envelope.event} without data.transparent.id`)
