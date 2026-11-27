@@ -37,8 +37,12 @@ export { clientIpKey, UNKNOWN_IP_KEY } from "./ip"
 /**
  * Paywall configuration.
  *
- * Concurrency: one chargeId is served by at most one request at a time per process (in-process
- * lock). Multi-instance deployments need sticky routing per chargeId or idempotent handlers.
+ * Concurrency: a paid request takes an in-process lock on its chargeId from just before /verify
+ * until finalize settles (or release() is called). While it is held, a second request for the same
+ * chargeId gets settlement_pending without /verify and without running the handler. The lock goes
+ * stale after 60 s of handler time plus the worst case of the facilitator calls. It lives in this
+ * process only: multi-instance deployments need sticky routing per chargeId, or handlers that are
+ * safe to run twice for one charge.
  */
 export interface PaywallConfig {
   /** Base URL of the p-x402 facilitator. */
@@ -57,11 +61,6 @@ export interface PaywallConfig {
    */
   facilitatorTimeoutMs?: number
 }
-// Concurrency note: a paid request takes an in-process lock on its chargeId from just before
-// /verify until finalize settles (or release() is called). While held, a second request for the
-// same chargeId gets settlement_pending without /verify and without running the handler. The lock
-// lives in this process only: multi-instance deployments need sticky routing per chargeId, or
-// handlers that are safe to run twice for one charge.
 
 export interface PaywallRoute {
   /** Price in centavos. */
@@ -104,8 +103,11 @@ const DEFAULT_IP_RATE_LIMIT = { limit: 10, windowMs: 60_000 }
 const DEFAULT_FACILITATOR_TIMEOUT_MS = 15_000
 /** Extra /settle attempts after a transport error, timeout or 5xx. */
 const SETTLE_RETRIES = 2
-/** A chargeId lock older than this is ignored (the request that took it is presumed gone). */
-const LOCK_STALE_MS = 60_000
+/**
+ * Time a handler may take while holding a chargeId lock. The lock goes stale (the request that
+ * took it is presumed gone) after this plus the worst case of /verify and every /settle attempt.
+ */
+const LOCK_HANDLER_HEADROOM_MS = 60_000
 const LOCK_SWEEP_SIZE = 1024
 const UNPAYABLE_METHODS = new Set(["HEAD", "OPTIONS"])
 
@@ -190,20 +192,32 @@ export function createPaywall(config: PaywallConfig): Paywall {
   let warnedUnknownIp = false
   /** chargeId → lock held by one in-flight paid request (see the PaywallConfig note). */
   const locks = new Map<string, { at: number }>()
+  const lockStaleMs = LOCK_HANDLER_HEADROOM_MS + timeoutMs * (2 + SETTLE_RETRIES)
+
+  interface Lock {
+    /** Restarts the stale clock; called before settling so slow settle retries keep the lock. */
+    touch(): void
+    release(): void
+  }
 
   /** Takes the lock for chargeId, or returns undefined when a fresh lock is held. */
-  function acquireLock(chargeId: string): (() => void) | undefined {
+  function acquireLock(chargeId: string): Lock | undefined {
     const at = now()
     const held = locks.get(chargeId)
-    if (held !== undefined && at - held.at < LOCK_STALE_MS) return undefined
+    if (held !== undefined && at - held.at < lockStaleMs) return undefined
     if (locks.size >= LOCK_SWEEP_SIZE) {
-      for (const [id, lock] of locks) if (at - lock.at >= LOCK_STALE_MS) locks.delete(id)
+      for (const [id, lock] of locks) if (at - lock.at >= lockStaleMs) locks.delete(id)
     }
     const token = { at }
     locks.set(chargeId, token)
-    return () => {
-      // A stale lock may have been taken over: release only our own.
-      if (locks.get(chargeId) === token) locks.delete(chargeId)
+    return {
+      touch() {
+        if (locks.get(chargeId) === token) token.at = now()
+      },
+      release() {
+        // A stale lock may have been taken over: release only our own.
+        if (locks.get(chargeId) === token) locks.delete(chargeId)
+      },
     }
   }
 
@@ -482,8 +496,8 @@ export function createPaywall(config: PaywallConfig): Paywall {
 
     // Another request for this charge is between /verify and settle: do not verify, do not run
     // the handler; the client retries after Retry-After.
-    const release = acquireLock(chargeId)
-    if (release === undefined) {
+    const lock = acquireLock(chargeId)
+    if (lock === undefined) {
       return {
         type: "response",
         response: failureResponse("settlement_pending", chargeId, paymentRequired),
@@ -494,11 +508,11 @@ export function createPaywall(config: PaywallConfig): Paywall {
     try {
       verified = await verifyOrSettle("/verify", facilitatorBody, chargeId)
     } catch (error) {
-      release()
+      lock.release()
       throw error
     }
     if (verified.kind !== "value") {
-      release()
+      lock.release()
       if (verified.kind === "response") return { type: "response", response: verified.response }
       return {
         type: "response",
@@ -511,11 +525,12 @@ export function createPaywall(config: PaywallConfig): Paywall {
       chargeId,
       amount,
       requirements,
-      release,
+      release: lock.release,
       async finalize(response) {
         try {
           // Handler failed: no settle, the paid charge stays unused.
           if (response.status >= 400) return response
+          lock.touch()
           const settled = await verifyOrSettle(
             "/settle",
             facilitatorBody,
@@ -537,7 +552,7 @@ export function createPaywall(config: PaywallConfig): Paywall {
           const reason = settled.kind === "failed" ? settled.reason : "unexpected_error"
           return failureResponse(reason, chargeId, paymentRequired)
         } finally {
-          release()
+          lock.release()
         }
       },
     }

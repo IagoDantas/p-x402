@@ -770,10 +770,11 @@ describe("chargeId lock", () => {
     expect(stub.callsTo("/verify")).toHaveLength(3)
   })
 
-  test("a lock older than 60 s is ignored; the old holder does not release the new lock", async () => {
-    const { clock, stub, paywall } = setup()
+  test("a stale lock is ignored; the old holder does not release the new lock", async () => {
+    // Stale after 60 s of handler time + 1 s timeout x (verify + 3 settle attempts) = 64 s.
+    const { clock, stub, paywall } = setup({ facilitatorTimeoutMs: 1_000 })
     const first = paid(await paywall.handle(paidRequest(), route))
-    clock.advance(59_999)
+    clock.advance(63_999)
     blockedWithoutVerify(await paywall.handle(paidRequest(), route))
     clock.advance(1)
     const second = paid(await paywall.handle(paidRequest(), route))
@@ -786,6 +787,38 @@ describe("chargeId lock", () => {
     await second.finalize(new Response("report"))
     paid(await paywall.handle(paidRequest(), route))
     expect(stub.callsTo("/verify")).toHaveLength(3)
+  })
+
+  test("with default timeouts a slow verify plus a slow handler keeps the lock", async () => {
+    const { clock, stub, paywall } = setup()
+    const first = paid(await paywall.handle(paidRequest(), route))
+    // 15 s /verify + 59 s handler: past the old fixed 60 s, still well inside 60 s + 4 x 15 s.
+    clock.advance(74_000)
+    blockedWithoutVerify(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(1)
+    await first.finalize(new Response("report"))
+  })
+
+  test("finalize restarts the stale clock so slow settle retries keep the lock", async () => {
+    const { clock, stub, paywall } = setup({ facilitatorTimeoutMs: 1_000 })
+    const settleGate = gate()
+    stub.reply("/settle", () =>
+      settleGate.opened.then(() =>
+        stub.json({
+          success: true,
+          transaction: "pix_char_mock_0001",
+          network: "pix:br",
+          amount: "500",
+        }),
+      ),
+    )
+    const first = paid(await paywall.handle(paidRequest(), route))
+    clock.advance(63_000)
+    const finalizing = first.finalize(new Response("report"))
+    clock.advance(63_000)
+    blockedWithoutVerify(await paywall.handle(paidRequest(), route))
+    settleGate.open()
+    expect((await finalizing).status).toBe(200)
   })
 })
 
