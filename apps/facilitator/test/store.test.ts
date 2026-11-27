@@ -41,6 +41,21 @@ for (const [name, make] of backends) {
       expect(await store.get("c2")).toEqual(bare)
     })
 
+    test("brCodeBase64 round-trips", async () => {
+      const store = make()
+      const withQr = { ...record("c1"), brCodeBase64: "data:image/png;base64,AAAA" }
+      await store.insert(withQr)
+      expect(await store.get("c1")).toEqual(withQr)
+    })
+
+    test("markPaid, markDisputed, markRefunded on a missing id are no-ops", async () => {
+      const store = make()
+      await store.markPaid("nope", 1)
+      await store.markDisputed("nope", 2)
+      await store.markRefunded("nope", 3)
+      expect(await store.get("nope")).toBeUndefined()
+    })
+
     test("insert rejects a duplicate id", async () => {
       const store = make()
       await store.insert(record("c1"))
