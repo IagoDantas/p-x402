@@ -44,7 +44,10 @@ export type CheckResult =
       reason: Px402ErrorCode
       /** "" when no chargeId could be read. */
       chargeId: string
-      /** 400 for an unreadable body, 200 for every other refusal. */
+      /**
+       * 400 only when the outer x402 envelope cannot be read; a Pix-specific part that fails its
+       * schema (requirements, payload) is an ordinary 200 refusal.
+       */
       status: 200 | 400
       record?: ChargeRecord
       observation?: PspObservation

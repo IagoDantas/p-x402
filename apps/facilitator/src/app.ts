@@ -18,7 +18,7 @@ import {
   type VerifyResponse,
   X402_VERSION,
 } from "@p-x402/core"
-import type { PixChargeState, PixProvider } from "@p-x402/psp"
+import type { PixCharge, PixChargeState, PixProvider, PixWebhookEvent } from "@p-x402/psp"
 import { type Context, Hono } from "hono"
 import { bodyLimit } from "hono/body-limit"
 import { type CheckContext, type FacilitatorMerchant, runChecks } from "./checks"
@@ -29,6 +29,11 @@ export type { ChargeRecord, ChargeStore } from "./store"
 
 /** JSON bodies above this size are refused with 413. */
 export const MAX_BODY_BYTES = 64 * 1024
+const DEFAULT_MERCHANT_RATE_LIMIT = { limit: 60, windowMs: 60_000 }
+const DEFAULT_MAX_AMOUNT = 100_000
+const DEFAULT_PSP_CACHE_MS = 1000
+/** The PSP answer cache is cleared outright when it grows past this many charges. */
+const PSP_CACHE_MAX_ENTRIES = 10_000
 
 export interface FacilitatorOptions {
   provider: PixProvider
@@ -76,10 +81,10 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
   const now = options.now ?? Date.now
   const chargeTtl = Math.max(options.chargeTtlSeconds ?? CHARGE_TTL_SECONDS, provider.minExpiresIn)
   const paidGraceMs = (options.paidGraceSeconds ?? PAID_GRACE_SECONDS) * 1000
-  const maxAmount = options.maxAmount ?? 100_000
-  const pspCacheMs = options.pspCacheMs ?? 1000
+  const maxAmount = options.maxAmount ?? DEFAULT_MAX_AMOUNT
+  const pspCacheMs = options.pspCacheMs ?? DEFAULT_PSP_CACHE_MS
   const limiter = createRateLimiter({
-    ...(options.merchantRateLimit ?? { limit: 60, windowMs: 60_000 }),
+    ...(options.merchantRateLimit ?? DEFAULT_MERCHANT_RATE_LIMIT),
     now,
   })
 
@@ -100,7 +105,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
         // A call detached by forget() must not cache its (possibly stale) answer.
         if (inflight.get(id) !== call) return state
         if (state.status !== "PAID" && pspCacheMs > 0) {
-          if (cache.size > 10_000) cache.clear()
+          if (cache.size > PSP_CACHE_MAX_ENTRIES) cache.clear()
           cache.set(id, { state, at: now() })
         } else {
           cache.delete(id)
@@ -220,7 +225,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
     }
 
     const description = request.description ?? request.resource.description
-    let charge: Awaited<ReturnType<PixProvider["createCharge"]>>
+    let charge: PixCharge
     try {
       charge = await provider.createCharge({
         amount,
@@ -367,7 +372,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
 
   app.post("/webhooks/pix", limit, async (c) => {
     if (!provider.parseWebhook) return c.notFound()
-    let event: Awaited<ReturnType<NonNullable<PixProvider["parseWebhook"]>>>
+    let event: PixWebhookEvent
     try {
       event = await provider.parseWebhook(c.req.raw)
     } catch (error) {
