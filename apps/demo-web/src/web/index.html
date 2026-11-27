@@ -6,6 +6,7 @@
 <title>p-x402 · demo ao vivo</title>
 <meta name="description" content="Um agente paga uma API com Pix pelo protocolo x402 v2, passo a passo, e a loja recebe na hora.">
 <meta name="theme-color" content="#08090a">
+<meta name="px402-api" content="">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -15,18 +16,20 @@
 <div class="shell">
   <header class="top">
     <div class="brand">
-      <span class="mark" aria-hidden="true">402</span>
+      <a class="mark" href="https://p-x402.com" aria-label="p-x402.com">402</a>
       <div>
         <h1>p-x402 <span class="h1-sub">demo ao vivo</span></h1>
-        <p class="lede">Um agente paga uma API com Pix pelo protocolo x402 v2. Cada clique roda o fluxo de verdade: 402, cobrança Pix, pagamento, nova tentativa, settle, 200.</p>
+        <p class="lede">Um agente compra um relatório de uma API e paga com Pix pelo protocolo x402 v2. Cada compra roda o fluxo de verdade: 402, cobrança Pix, pagamento, nova tentativa, settle, 200.</p>
       </div>
     </div>
     <div class="top-meta">
-      <span class="badge" id="provider-badge">PSP …</span>
+      <span class="badge" id="provider-badge" title="Provedor de pagamento (PSP) em uso">PSP …</span>
       <span class="badge" id="sse-badge" data-state="connecting"><i class="dot" aria-hidden="true"></i><span>conectando</span></span>
-      <button class="btn btn-ghost" id="reset" type="button">Reiniciar demo</button>
+      <button class="btn btn-ghost" id="reset" type="button">Reiniciar</button>
     </div>
   </header>
+
+  <p class="notice" id="notice" role="status" hidden></p>
 
   <main class="grid">
     <section class="card account" aria-labelledby="payer-title">
@@ -49,42 +52,62 @@
           <span class="mono" id="spent-label">R$ 0,00 de R$ 50,00</span>
         </div>
         <div class="meter" aria-hidden="true"><span id="spent-bar"></span></div>
-        <p class="hint">Política do <code>wrapFetch</code>: até R$ 10,00 por compra e R$ 50,00 no total.</p>
+        <p class="hint" id="policy-hint">Política do <code>wrapFetch</code>: até R$ 10,00 por compra e R$ 50,00 no total.</p>
       </div>
 
       <div class="product">
         <div>
           <p class="product-name">Relatório de vendas</p>
-          <p class="mono product-route">GET /loja/relatorio</p>
+          <p class="mono product-route">GET /relatorio</p>
         </div>
         <span class="price">R$ 5,00</span>
       </div>
 
-      <div class="actions">
-        <button class="btn btn-primary" id="buy" type="button">Comprar com Pix</button>
-        <button class="btn btn-ghost" id="buy-3" type="button">3 compras em paralelo</button>
+      <div class="modes" role="tablist" aria-label="Modo da demo">
+        <button type="button" role="tab" id="tab-auto" aria-selected="true" aria-controls="panel-auto">Um clique</button>
+        <button type="button" role="tab" id="tab-steps" aria-selected="false" aria-controls="panel-steps">Passo a passo</button>
       </div>
-      <label class="toggle">
-        <input type="checkbox" id="slow-bank">
-        <span class="switch" aria-hidden="true"></span>
-        <span>Banco lento: Pix confirma em 1,5 s</span>
-      </label>
+
+      <div class="mode-panel" id="panel-auto" role="tabpanel" aria-labelledby="tab-auto">
+        <div class="actions">
+          <button class="btn btn-primary" id="buy" type="button">Comprar com Pix</button>
+          <button class="btn btn-ghost" id="buy-3" type="button">3 compras em paralelo</button>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="slow-bank">
+          <span class="switch" aria-hidden="true"></span>
+          <span>Banco lento: Pix confirma em 1,5 s</span>
+        </label>
+      </div>
+
+      <div class="mode-panel" id="panel-steps" role="tabpanel" aria-labelledby="tab-steps" hidden>
+        <ol class="stepper">
+          <li><button class="btn btn-step" id="step-pedir" type="button"><span class="n">1</span>Pedir o relatório</button></li>
+          <li><button class="btn btn-step" id="step-pagar" type="button" disabled><span class="n">2</span>Pagar o Pix (simulado)</button></li>
+          <li><button class="btn btn-step" id="step-tentar" type="button" disabled><span class="n">3</span>Tentar de novo com a prova</button></li>
+        </ol>
+        <p class="hint" id="step-hint">O agente para em cada passo e espera o seu clique. Os headers de cada passo aparecem na linha do tempo.</p>
+      </div>
     </section>
 
     <section class="card flow" aria-labelledby="flow-title">
       <div class="flow-head">
         <div>
           <h2 id="flow-title">Linha do tempo do protocolo</h2>
-          <p class="hint" id="flow-sub">Clique em “Comprar com Pix” para começar.</p>
+          <p class="hint" id="flow-sub">Faça uma compra para começar.</p>
         </div>
         <div class="runs" id="runs" role="tablist" aria-label="Compras"></div>
+      </div>
+      <div class="expired" id="expired" hidden>
+        <p><b>Sessão expirada, comece de novo.</b> <span id="expired-why">A compra ficou parada até a cobrança vencer.</span></p>
+        <button class="btn btn-ghost" id="expired-restart" type="button">Começar de novo</button>
       </div>
       <ol class="timeline" id="timeline"></ol>
       <div class="empty" id="empty">
         <ol class="legend">
           <li><span class="mono">GET</span> o agente pede o recurso sem pagar</li>
           <li><span class="mono">402</span> a loja responde com <code>PAYMENT-REQUIRED</code> e uma cobrança Pix</li>
-          <li><span class="mono">PIX</span> o agente paga; o PSP confirma e a loja é avisada por SSE</li>
+          <li><span class="mono">PIX</span> o agente paga (simulado); o PSP confirma e a loja é avisada por SSE</li>
           <li><span class="mono">RETRY</span> nova tentativa com <code>PAYMENT-SIGNATURE</code></li>
           <li><span class="mono">200</span> verify → handler → settle e <code>PAYMENT-RESPONSE</code></li>
         </ol>
@@ -102,7 +125,7 @@
       <div class="balance">
         <span class="balance-v" id="merchant-balance">R$ 0,00</span>
         <span class="delta" id="merchant-delta" aria-hidden="true"></span>
-        <span class="balance-l">Recebido via Pix</span>
+        <span class="balance-l">Recebido via Pix (simulado)</span>
       </div>
 
       <div class="latency">
@@ -112,7 +135,7 @@
         </div>
         <div class="latency-side">
           <span><b id="lat-median">–</b> mediana</span>
-          <span><b id="lat-push">–</b> push SSE</span>
+          <span><b id="lat-push">–</b> entrega SSE</span>
           <span><b id="lat-count">0</b> pagamentos</span>
         </div>
       </div>
@@ -124,8 +147,8 @@
   </main>
 
   <footer class="foot">
-    <span>Protocolo x402 v2 sobre Pix · <code>wrapFetch</code> no navegador, <code>pixPaywall</code> e facilitator no servidor.</span>
-    <span id="foot-provider"></span>
+    <span>Protocolo x402 v2 sobre Pix · <code>wrapFetch</code>, <code>pixPaywall</code> e facilitator rodando no servidor. Pagamentos simulados: nenhum dinheiro real se move.</span>
+    <span><span id="foot-provider"></span> · <a href="https://p-x402.com">p-x402.com</a></span>
   </footer>
 </div>
 <script type="module" src="./main.ts"></script>

@@ -1,48 +1,74 @@
+import { bunSqliteStore } from "@p-x402/facilitator/stores/bun-sqlite"
 import { createAbacatePayProvider, createMockPixProvider, type PixProvider } from "@p-x402/psp"
 import { createDemoWeb } from "./app"
+import { readConfig } from "./config"
+import { everyDayAtUtcHour } from "./schedule"
 import page from "./web/index.html"
 
-// `bun run demo:web`: seller, facilitator and the visual demo on one port.
-// Default PSP is the in-memory mock (no secrets). PX402_PROVIDER=abacatepay uses the sandbox.
+// `bun run demo:web`: the public demo service (agent, seller, facilitator, page) on one port.
 function main() {
-  const port = Number(Bun.env.DEMO_WEB_PORT ?? "4030")
-  const providerName = Bun.env.PX402_PROVIDER ?? "mock"
+  let config: ReturnType<typeof readConfig>
+  try {
+    config = readConfig(Bun.env)
+  } catch (error) {
+    console.error(`demo-web: ${(error as Error).message}`)
+    process.exit(1)
+  }
 
   let provider: PixProvider
   let wireWebhooks: ((fetch: (request: Request) => Promise<Response>) => void) | undefined
-  if (providerName === "abacatepay") {
-    const apiKey = Bun.env.ABACATEPAY_API_KEY?.trim()
-    if (!apiKey) {
-      console.error("demo-web: ABACATEPAY_API_KEY is required with PX402_PROVIDER=abacatepay")
-      process.exit(1)
+  if (config.provider === "abacatepay" && config.abacatepayApiKey) {
+    provider = createAbacatePayProvider({
+      apiKey: config.abacatepayApiKey,
+      ...(config.abacatepayWebhookSecret ? { webhookSecret: config.abacatepayWebhookSecret } : {}),
+    })
+    if (!config.abacatepayWebhookSecret) {
+      console.warn("demo-web: ABACATEPAY_WEBHOOK_SECRET not set; the webhook route is off")
     }
-    const webhookSecret = Bun.env.ABACATEPAY_WEBHOOK_SECRET?.trim()
-    provider = createAbacatePayProvider({ apiKey, ...(webhookSecret ? { webhookSecret } : {}) })
-  } else if (providerName === "mock") {
+  } else {
     const mock = createMockPixProvider({
       idPrefix: `pix_char_mock_${crypto.randomUUID().slice(0, 8)}_`,
     })
     wireWebhooks = (fetch) => mock.setWebhookSink(fetch)
     provider = mock
-  } else {
-    console.error(`demo-web: unknown PX402_PROVIDER ${providerName}`)
-    process.exit(1)
   }
 
-  const demo = createDemoWeb({ provider })
-  wireWebhooks?.(async (request) => demo.facilitatorFetch(request))
+  const demo = createDemoWeb({
+    provider,
+    store: config.dbPath ? bunSqliteStore(config.dbPath) : undefined,
+    storeName: config.dbPath ? "sqlite" : "memoria",
+    ...(config.merchantToken ? { token: config.merchantToken } : {}),
+    allowedOrigins: config.allowedOrigins,
+    ...(config.adminSecret ? { adminSecret: config.adminSecret } : {}),
+    ...(config.clientIpHeader ? { clientIpHeader: config.clientIpHeader } : {}),
+    runsPerIpPerHour: config.runsPerIpPerHour,
+    chargesPerIpPerMinute: config.chargesPerIpPerMinute,
+    merchantChargesPerMinute: config.merchantChargesPerMinute,
+    ...(config.stepTimeoutSeconds ? { stepTimeoutMs: config.stepTimeoutSeconds * 1000 } : {}),
+  })
+  wireWebhooks?.((request) => demo.facilitatorFetch(request))
+
+  if (config.resetUtcHour !== undefined) {
+    everyDayAtUtcHour(config.resetUtcHour, () => {
+      demo.agent.resetAll()
+      console.log("demo-web: daily reset done")
+    })
+  }
 
   const server = Bun.serve({
-    port,
+    port: config.port,
     // SSE connections stay open; the app sends a keep-alive every 5 s.
     idleTimeout: 30,
-    development: Bun.env.NODE_ENV !== "production",
+    // Hot reload re-runs the page script and would drop its state; only for UI work.
+    development: Bun.env.NODE_ENV === "development",
     routes: { "/": page },
     fetch: demo.app.fetch,
   })
-  console.log(`p-x402 demo visual (PSP ${provider.name}) em ${server.url}`)
+  console.log(
+    `p-x402 demo (PSP ${provider.name}, ${config.dbPath ? "sqlite" : "memória"}) em ${server.url}`,
+  )
   if (provider.name !== "mock") {
-    console.log(`webhook do PSP: ${server.url}facilitator/webhooks/pix (via túnel)`)
+    console.log(`webhook do PSP: <endereço público>/facilitator/webhooks/pix`)
   }
 }
 

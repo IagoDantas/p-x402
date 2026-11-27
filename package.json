@@ -12,6 +12,7 @@
     "demo": "bun apps/demo-client/src/index.ts",
     "demo:local": "bun apps/demo-client/src/all-in-one.ts",
     "demo:web": "bun apps/demo-web/src/index.ts",
+    "demo:web:build": "bun apps/demo-web/src/build.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.lib.json",
     "lint": "biome check .",

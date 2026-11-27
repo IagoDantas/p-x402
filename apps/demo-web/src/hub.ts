@@ -1,4 +1,4 @@
-/** Wall-clock milliseconds with sub-millisecond precision; the browser uses the same formula. */
+/** Wall-clock milliseconds with sub-millisecond precision. */
 export const clock = () => performance.timeOrigin + performance.now()
 
 /** Seller → facilitator call, observed from the seller side. */
@@ -17,7 +17,7 @@ export interface FacilitatorCallEvent {
 }
 
 /** The PSP reported the charge PAID and the facilitator recorded it. */
-export interface PaidEvent {
+export interface PaidSignal {
   type: "pix.confirmado"
   chargeId: string
   amount: number
@@ -25,64 +25,34 @@ export interface PaidEvent {
 }
 
 /** /settle consumed the charge: the resource was delivered. */
-export interface SettledEvent {
+export interface SettledSignal {
   type: "liquidado"
   chargeId: string
   amount: number
   at: number
 }
 
-export interface Balances {
-  pagador: number
-  recebedor: number
-}
-
-export interface BalancesEvent {
-  type: "saldos"
-  saldos: Balances
-  at: number
-}
-
-export type DemoEvent = FacilitatorCallEvent | PaidEvent | SettledEvent | BalancesEvent
-
-export interface PaymentSummary {
-  chargeId: string
-  amount: number
-  paidAt: number
-  settledAt: number | null
-}
+export type HubEvent = FacilitatorCallEvent | PaidSignal | SettledSignal
 
 export interface DemoHub {
-  publish(event: DemoEvent): void
-  subscribe(listener: (event: DemoEvent) => void): () => void
-  /** Records a PAID charge once; moves the simulated balances and announces both. */
+  publish(event: HubEvent): void
+  subscribe(listener: (event: HubEvent) => void): () => void
+  /** Announces a PAID charge once. */
   paid(chargeId: string, amount: number): void
-  /** Records a consumed charge once. */
+  /** Announces a consumed charge once. */
   settled(chargeId: string, amount: number): void
-  balances(): Balances
-  initialPayerBalance: number
-  /** Most recent first. */
-  payments(): PaymentSummary[]
-  /** Puts both balances back to their starting values and forgets the payment list. */
+  /** Forgets which charges were announced. */
   reset(): void
   readonly listenerCount: number
 }
 
-const MAX_PAYMENTS = 50
+/** In-process bus for what the facilitator and the seller do. Carries charge ids only, no payer data. */
+export function createHub(): DemoHub {
+  const listeners = new Set<(event: HubEvent) => void>()
+  let announcedPaid = new Set<string>()
+  let announcedSettled = new Set<string>()
 
-/**
- * In-memory pub/sub for the demo plus a simulated ledger: the payer's bank balance and the
- * merchant's balance. Balances move only when the PSP confirms a charge (the PSP's status is the truth).
- */
-export function createHub(options: { initialPayerBalance?: number } = {}): DemoHub {
-  const initialPayerBalance = options.initialPayerBalance ?? 10_000
-  const listeners = new Set<(event: DemoEvent) => void>()
-  const announcedPaid = new Set<string>()
-  const announcedSettled = new Set<string>()
-  let payments: PaymentSummary[] = []
-  let balances: Balances = { pagador: initialPayerBalance, recebedor: 0 }
-
-  function publish(event: DemoEvent) {
+  function publish(event: HubEvent) {
     for (const listener of listeners) {
       try {
         listener(event)
@@ -103,30 +73,16 @@ export function createHub(options: { initialPayerBalance?: number } = {}): DemoH
     paid(chargeId, amount) {
       if (announcedPaid.has(chargeId)) return
       announcedPaid.add(chargeId)
-      const at = clock()
-      balances = { pagador: balances.pagador - amount, recebedor: balances.recebedor + amount }
-      payments = [{ chargeId, amount, paidAt: at, settledAt: null }, ...payments].slice(
-        0,
-        MAX_PAYMENTS,
-      )
-      publish({ type: "pix.confirmado", chargeId, amount, at })
-      publish({ type: "saldos", saldos: { ...balances }, at })
+      publish({ type: "pix.confirmado", chargeId, amount, at: clock() })
     },
     settled(chargeId, amount) {
       if (announcedSettled.has(chargeId)) return
       announcedSettled.add(chargeId)
-      const at = clock()
-      const payment = payments.find((p) => p.chargeId === chargeId)
-      if (payment) payment.settledAt = at
-      publish({ type: "liquidado", chargeId, amount, at })
+      publish({ type: "liquidado", chargeId, amount, at: clock() })
     },
-    balances: () => ({ ...balances }),
-    initialPayerBalance,
-    payments: () => payments.map((p) => ({ ...p })),
     reset() {
-      balances = { pagador: initialPayerBalance, recebedor: 0 }
-      payments = []
-      publish({ type: "saldos", saldos: { ...balances }, at: clock() })
+      announcedPaid = new Set()
+      announcedSettled = new Set()
     },
     get listenerCount() {
       return listeners.size
