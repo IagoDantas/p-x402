@@ -158,7 +158,14 @@ describe("demo-web app", () => {
     const events = await openEvents(fetch)
     await events.until((all) => all.length >= 1)
     let pay: (() => Promise<void>) | undefined
-    const paidFetch = wrapFetch(fetch, {
+    const retryAfter: (string | null)[] = []
+    const recording = async (request: Request) => {
+      const answer = await fetch(request)
+      if (request.headers.has("payment-signature"))
+        retryAfter.push(answer.headers.get("retry-after"))
+      return answer
+    }
+    const paidFetch = wrapFetch(recording, {
       payer: {
         paysBrCode: false,
         async pay(charge) {
@@ -173,6 +180,8 @@ describe("demo-web app", () => {
     })
     const response = await paidFetch(`${ORIGIN}/loja/relatorio`)
     expect(response.status).toBe(200)
+    // settlement_pending tells the agent to come back at once; its own backoff paces the retries.
+    expect(retryAfter[0]).toBe("0")
     const all = await events.until((m) => m.some((e) => e.event === "liquidado"))
     const verifies = all
       .filter((m) => m.event === "facilitator" && (m.data as { path: string }).path === "/verify")

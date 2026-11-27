@@ -280,7 +280,7 @@ async function tracedFetch(request: Request): Promise<Response> {
       http: "402",
       title: pending ? "Pix ainda não confirmado" : "Pagamento recusado",
       note: pending
-        ? `O PSP ainda não marcou a cobrança como paga (<span class="mono">settlement_pending</span>). O agente tenta de novo${retryAfter ? ` em ${retryAfter} s` : ""}.`
+        ? `O PSP ainda não marcou a cobrança como paga (<span class="mono">settlement_pending</span>). O agente tenta de novo ${retryAfter && retryAfter !== "0" ? `em ${retryAfter} s` : "em instantes"}.`
         : `Motivo: <span class="mono">${reason}</span>`,
       ...(paymentResponse
         ? { details: [{ label: "PAYMENT-RESPONSE", raw: paymentResponse, decoded: settlement }] }
@@ -360,6 +360,10 @@ function createPaidFetch(): PaidFetch {
   return wrapFetch(tracedFetch, {
     payer,
     policy: { ...POLICY, allowedOrigins: [location.origin] },
+    // The seller sends Retry-After: 0, so this backoff alone paces checks while the Pix is pending:
+    // 150 ms, 180 ms, 216 ms … up to 400 ms. Pending checks are cheap (the facilitator caches the
+    // PSP's answer until the webhook clears it), so the 200 lands soon after the PSP confirms.
+    retry: { initialDelayMs: 150, factor: 1.2, maxDelayMs: 400 },
   })
 }
 

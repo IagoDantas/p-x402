@@ -10,11 +10,14 @@ export interface DemoSellerOptions {
   price: number
   /** Charges per client IP per minute. A demo visitor clicks fast; production keeps the default. */
   chargesPerMinute: number
+  /** Retry-After sent with settlement_pending, in seconds. */
+  pendingRetryAfterSeconds: number
 }
 
 /**
  * Same paid route as apps/demo-server (GET /relatorio behind `pixPaywall`), with a per-IP charge
- * limit raised for a hands-on demo.
+ * limit raised for a hands-on demo and a shorter Retry-After while the Pix is pending, so the
+ * agent's retry lands right after the PSP confirms.
  */
 export function createDemoSeller(options: DemoSellerOptions) {
   const app = new Hono<{ Variables: Px402Variables }>()
@@ -23,6 +26,7 @@ export function createDemoSeller(options: DemoSellerOptions) {
     token: options.token,
     fetch: options.fetch,
     ipRateLimit: { limit: options.chargesPerMinute, windowMs: 60_000 },
+    settlementPendingRetryAfterSeconds: options.pendingRetryAfterSeconds,
   })
 
   app.get(

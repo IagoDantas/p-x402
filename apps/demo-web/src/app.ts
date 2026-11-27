@@ -24,6 +24,8 @@ export interface DemoWebOptions {
   heartbeatMs?: number
   /** Charges per client IP per minute at the seller. Default 120. */
   chargesPerMinute?: number
+  /** Retry-After sent with settlement_pending, in seconds. Default 0 (the agent's backoff paces it). */
+  pendingRetryAfterSeconds?: number
 }
 
 export interface DemoWeb {
@@ -67,6 +69,7 @@ export function createDemoWeb(options: DemoWebOptions): DemoWeb {
     fetch: observedFetch(async (request) => facilitatorFetch(request), hub),
     price: RESOURCE_PRICE,
     chargesPerMinute: options.chargesPerMinute ?? 120,
+    pendingRetryAfterSeconds: options.pendingRetryAfterSeconds ?? 0,
   })
 
   const snapshot = () => ({

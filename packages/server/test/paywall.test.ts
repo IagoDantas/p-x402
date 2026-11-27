@@ -306,6 +306,22 @@ describe("paid retry", () => {
     expect(stub.callsTo("/pix/charges")).toHaveLength(0)
   })
 
+  test("settlementPendingRetryAfterSeconds sets the Retry-After of settlement_pending", async () => {
+    const { stub, paywall } = setup({ settlementPendingRetryAfterSeconds: 0 })
+    stub.reply("/verify", stub.json({ isValid: false, invalidReason: "settlement_pending" }))
+    const res = response(await paywall.handle(paidRequest(), route))
+    expect(res.status).toBe(402)
+    expect(res.headers.get("Retry-After")).toBe("0")
+  })
+
+  test("settlementPendingRetryAfterSeconds must be a non-negative integer", () => {
+    for (const value of [-1, 0.5, Number.NaN]) {
+      expect(() => setup({ settlementPendingRetryAfterSeconds: value })).toThrow(
+        "settlementPendingRetryAfterSeconds",
+      )
+    }
+  })
+
   test("other verify reason → 402 with PAYMENT-RESPONSE only", async () => {
     const { stub, paywall } = setup()
     stub.reply("/verify", stub.json({ isValid: false, invalidReason: "charge_expired" }))

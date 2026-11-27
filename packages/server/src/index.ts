@@ -56,6 +56,11 @@ export interface PaywallConfig {
    * timeout or 5xx) is retried up to 2 more times with the same Idempotency-Key.
    */
   facilitatorTimeoutMs?: number
+  /**
+   * Retry-After, in whole seconds, sent with `settlement_pending`. Default 2. Lower it when the
+   * PSP confirms fast (for example with webhooks) so clients come back sooner.
+   */
+  settlementPendingRetryAfterSeconds?: number
 }
 // Concurrency note: a paid request takes an in-process lock on its chargeId from just before
 // /verify until finalize settles (or release() is called). While held, a second request for the
@@ -183,6 +188,14 @@ export function createPaywall(config: PaywallConfig): Paywall {
   const fetchFn = config.fetch ?? defaultFetch
   const timeoutMs = config.facilitatorTimeoutMs ?? DEFAULT_FACILITATOR_TIMEOUT_MS
   const now = config.now ?? Date.now
+  const pendingRetryAfter =
+    config.settlementPendingRetryAfterSeconds ?? SETTLEMENT_PENDING_RETRY_AFTER_SECONDS
+  if (!Number.isSafeInteger(pendingRetryAfter) || pendingRetryAfter < 0) {
+    throw new Px402Error(
+      "invalid_request",
+      "settlementPendingRetryAfterSeconds must be a non-negative integer",
+    )
+  }
   const limiter = createRateLimiter({
     ...(config.ipRateLimit ?? DEFAULT_IP_RATE_LIMIT),
     now,
@@ -339,7 +352,7 @@ export function createPaywall(config: PaywallConfig): Paywall {
       return jsonResponse(402, body, {
         [HEADER_PAYMENT_REQUIRED]: encodePaymentRequired(body),
         [HEADER_PAYMENT_RESPONSE]: settlement,
-        "retry-after": String(SETTLEMENT_PENDING_RETRY_AFTER_SECONDS),
+        "retry-after": String(pendingRetryAfter),
       })
     }
     return jsonResponse(402, {}, { [HEADER_PAYMENT_RESPONSE]: settlement })
