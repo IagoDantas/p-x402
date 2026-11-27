@@ -119,9 +119,9 @@ Stack: Bun, Hono, Zod v4 e Biome.
 ```ts
 import { pixPaywall } from "@p-x402/server/hono"
 
-const pix = pixPaywall({ facilitator: "https://facilitator.exemplo.com", token: process.env.PIX402_TOKEN })
+const pix = pixPaywall({ facilitatorUrl: "https://facilitator.exemplo.com", token: process.env.PX402_MERCHANT_TOKEN })
 
-app.get("/relatorio", pix({ amount: 500, description: "Relatório PDF" }), (c) => c.json(gerar())) // R$ 5,00
+app.get("/relatorio", pix({ amount: "500", description: "Relatório PDF" }), (c) => c.json(gerar())) // R$ 5,00
 ```
 
 **Quem compra (pessoa ou agente):**
@@ -172,4 +172,4 @@ Todo mundo trabalha um pouco em tudo.
 
 ## Licença
 
-_A definir._
+[Apache-2.0](../LICENSE).

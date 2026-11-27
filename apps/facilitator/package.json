@@ -1,0 +1,17 @@
+{
+  "name": "@p-x402/facilitator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/app.ts",
+    "./stores/memory": "./src/stores/memory.ts",
+    "./stores/bun-sqlite": "./src/stores/bun-sqlite.ts"
+  },
+  "dependencies": {
+    "@p-x402/core": "workspace:*",
+    "@p-x402/psp": "workspace:*",
+    "hono": "4.13.22",
+    "zod": "4.6.7"
+  }
+}

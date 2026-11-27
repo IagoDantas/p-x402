@@ -2,7 +2,7 @@
 
 > Pagamentos HTTP nativos via **Pix**, no padrão do protocolo [x402](https://x402.org/).
 
-**Status:** em desenvolvimento para o **Hack Brasil 2026**, trilha *Pagamentos & finanças*. Este README descreve a arquitetura e o plano do SDK; os pacotes ainda não foram publicados. Problema, motivação e escopo do hackathon estão em [`docs/README.MD`](docs/README.MD).
+**Status:** em desenvolvimento para o **Hack Brasil 2026**, trilha *Pagamentos & finanças*. Este README descreve a arquitetura e o plano do SDK; os pacotes ainda não foram publicados. A primeira versão funcional (ida e volta `402 → Pix → 200` local, com PSP mock) já roda: veja [Como executar](#como-executar). Problema, motivação e escopo do hackathon estão em [`docs/README.MD`](docs/README.MD).
 
 O `p-x402` implementa o protocolo x402 (v2) com o Pix como meio de pagamento. Uma API responde `402 Payment Required` com uma cobrança Pix; o cliente (uma pessoa ou um agente de IA) paga e repete a requisição com a prova do pagamento. O código de quem consome a API faz só uma chamada HTTP comum.
 
@@ -21,10 +21,11 @@ O `p-x402` implementa o protocolo x402 (v2) com o Pix como meio de pagamento. Um
 - [Segurança no `/settle`](#segurança-no-settle)
 - [SDK](#sdk)
   - [Pacotes TypeScript](#pacotes-typescript)
-  - [Uso](#uso-planejado)
+  - [Uso](#uso)
   - [Princípios](#princípios)
 - [SDKs em várias linguagens](#sdks-em-várias-linguagens)
-- [Layout do repositório](#layout-do-repositório-planejado)
+- [Layout do repositório](#layout-do-repositório)
+- [Como executar](#como-executar)
 - [Schemes](#schemes)
 - [Roadmap](#roadmap)
 - [Referências](#referências)
@@ -37,13 +38,13 @@ No x402 com cripto (scheme `exact` em EVM), o cliente **assina offline** uma aut
 
 O Pix funciona como *push*: quem paga precisa iniciar a transferência pelo próprio banco ou PSP. Daí vêm as adaptações:
 
-| Diferença | Consequência no pix402 |
+| Diferença | Consequência no p-x402 |
 |---|---|
 | Não existe uma "assinatura de pagamento" portátil | O `payload` leva uma **prova de que o pagamento já foi feito** (o `chargeId` da cobrança), não uma assinatura |
 | Cada pagamento precisa de uma cobrança nova (brCode único) | O facilitator ganha um endpoint extra, `POST /pix/charges`, chamado ao montar cada 402 |
 | A liquidação acontece antes de entregar o recurso | Usa `paymentFlow: "upfront"` da spec v2 |
 | Há tarifa fixa por Pix e valor mínimo (AbacatePay: R$ 0,80 e R$ 1,00) | O scheme A serve para cobranças a partir de uns R$ 5. Micropagamentos ficam para o [scheme B](#schemes) |
-| Existe o MED (devolução em caso de fraude) | O facilitator acompanha disputas via webhook e pode bloquear pagadores |
+| Existe o MED (devolução em caso de fraude) | O facilitator acompanha disputas e estornos via webhook e o `/settle` passa a recusar a cobrança |
 
 A spec v2 do x402 já prevê redes que não são blockchain: `asset` aceita código ISO 4217 (`"BRL"`) e `network` segue o formato CAIP-2. Por isso a rede aqui é **`pix:br`**.
 
@@ -58,7 +59,7 @@ A spec v2 do x402 já prevê redes que não são blockchain: `asset` aceita cód
  (app ou agente)              (API que cobra)               (serviço único, em TS)
  ┌──────────────┐            ┌──────────────┐               ┌──────────────────┐        ┌────────────┐
  │ Python agent │            │ Spring Boot  │               │ /pix/charges     │        │ AbacatePay │
- │ + pix402     │◀──HTTP────▶│ + pix402-java│◀────HTTP─────▶│ /settle /verify  │◀──────▶│            │
+ │ + p-x402     │◀──HTTP────▶│ + p-x402-java│◀────HTTP─────▶│ /settle /verify  │◀──────▶│            │
  │   (client)   │            │   (server)   │   token do    │ /webhooks        │  chave │            │
  └──────┬───────┘            └──────────────┘   vendedor    │ banco: charges   │  da API└─────┬──────┘
         │                                                   └──────────────────┘              │
@@ -81,7 +82,7 @@ A spec v2 do x402 já prevê redes que não são blockchain: `asset` aceita cód
    ```
 3. O comprador instala o SDK cliente e define quanto aceita gastar:
    ```python
-   client = httpx.Client(transport=pix402.Transport(payer=meu_payer, max_per_request=1000))
+   client = httpx.Client(transport=px402.Transport(payer=meu_payer, max_per_request=1000))
    ```
 
 ### Uma compra, passo a passo
@@ -125,15 +126,15 @@ Decodificado:
     "asset": "BRL",
     "amount": "500",
     "payTo": "loja_123",
-    "maxTimeoutSeconds": 600,
+    "maxTimeoutSeconds": 300,
     "extra": {
       "paymentFlow": "upfront",
       "assetTransferMethod": "pix-charge",
       "provider": "abacatepay",
+      "resourceUrl": "https://api.loja.com.br/relatorio",
       "chargeId": "pix_char_abc",
       "brCode": "00020126...",
-      "expiresAt": "2026-11-25T15:10:00Z",
-      "statusUrl": "https://facilitator.exemplo.com/pix/charges/pix_char_abc"
+      "expiresAt": "2026-11-25T15:10:00Z"
     }
   }]
 }
@@ -147,7 +148,7 @@ Decodificado:
   - pagar via API bancária, no caso de um agente autônomo;
   - chamar `simulate-payment`, em desenvolvimento.
 
-**⑤ O Pix é liquidado.** O AbacatePay manda o webhook `transparent.completed` ao facilitator, que marca a cobrança como `PAID`. Enquanto isso, o SDK do comprador faz polling no `statusUrl` até ver `PAID`.
+**⑤ O Pix é liquidado.** O AbacatePay manda o webhook `transparent.completed` ao facilitator, que confere o status no PSP. O comprador não consulta o facilitator: se refizer a requisição antes da confirmação, recebe `402` com a **mesma** cobrança, `errorReason: "settlement_pending"` no `PAYMENT-RESPONSE` e `Retry-After: 2`, e repete com backoff até a cobrança expirar.
 
 **⑥ O SDK do comprador refaz a requisição com a prova.**
 
@@ -162,7 +163,9 @@ Decodificado:
 { "x402Version": 2, "accepted": { "...": "requisitos recebidos no 402" }, "payload": { "chargeId": "pix_char_abc" } }
 ```
 
-**⑦ O SDK do vendedor pede a liquidação ao facilitator.**
+**⑦ O SDK do vendedor verifica o pagamento, executa o handler e só então liquida.**
+
+A ordem é `POST /verify` (todas as verificações, sem alterar nada) → handler da rota → `POST /settle` (só se o handler respondeu sem erro). Se o handler falhar, a cobrança continua paga e não consumida, e o comprador pode repetir com o mesmo `chargeId`.
 
 ```http
 POST /settle
@@ -171,7 +174,7 @@ Authorization: Bearer <token da loja>
 { "x402Version": 2, "paymentPayload": { ... }, "paymentRequirements": { ... } }
 ```
 
-O facilitator aplica as [verificações de segurança](#segurança-no-settle) e marca a cobrança como consumida.
+O facilitator repete as [verificações de segurança](#segurança-no-settle) e marca a cobrança como consumida.
 
 **⑧ O vendedor entrega o recurso.**
 
@@ -204,7 +207,10 @@ Princípio do projeto: **o dinheiro nunca passa por nós.** No MVP, o vendedor r
 | Tentou usar o mesmo pagamento duas vezes | O segundo `/settle` responde `charge_already_consumed`. |
 | Pagou o recurso de R$ 1 e tentou usar no de R$ 50 | `amount_mismatch` / `resource_mismatch`, porque a cobrança está gravada com o recurso e o valor. |
 | Não pagou a tempo | A cobrança expira. Uma nova requisição gera outro 402 com outra cobrança. |
-| Fraude contestada via MED | O webhook `transparent.disputed` marca a cobrança e o facilitator pode bloquear o pagador. |
+| Refez a requisição antes de o Pix ser confirmado | `402` com a mesma cobrança, `settlement_pending` e `Retry-After: 2`. Nenhuma cobrança nova é criada. |
+| O handler do vendedor falhou | Não há `/settle`: a cobrança fica paga e não consumida e pode ser usada de novo. |
+| Cobranças demais | `429` com `Retry-After`, sem criar cobrança: 10 por minuto por IP no SDK do vendedor e 60 por minuto por loja no facilitator. |
+| Fraude contestada via MED ou estorno | Os webhooks `transparent.disputed` e `transparent.refunded` marcam a cobrança (depois de conferir no PSP) e o `/settle` responde `charge_disputed` / `charge_refunded`. O pagador não é bloqueado. |
 | A cobrança passa do limite do agente | O SDK cliente nem paga e lança `policy_exceeded`. |
 
 ### Tempo
@@ -220,12 +226,12 @@ O gargalo é sempre o Pix. É por isso que micropagamentos de centavos ficam par
 
 ## Segurança no `/settle`
 
-O facilitator só aprova se **todas** estas condições forem verdadeiras:
+O `/verify` e o `/settle` aplicam as mesmas verificações; só o `/settle` grava algo. O facilitator só aprova se **todas** estas condições forem verdadeiras:
 
 1. O `chargeId` existe no banco do facilitator, ou seja, foi criado por ele.
 2. A cobrança pertence ao vendedor dono do token que chamou o `/settle`.
 3. `amount`, `payTo` e `resource.url` batem com o que foi gravado na criação da cobrança.
-4. O PSP confirma `PAID` na hora. O webhook sozinho nunca basta.
+4. O PSP confirma `PAID` na hora. O webhook sozinho nunca basta, e um erro do PSP conta como pendente, nunca como pago. Uma cobrança paga pode ser usada por até 24 h depois do pagamento, mesmo após expirar.
 5. O status não é `UNDER_DISPUTE` nem `REFUNDED`.
 6. A cobrança ainda não foi consumida. A marcação é atômica: `UPDATE ... SET consumed_at = now WHERE id = ? AND consumed_at IS NULL`.
 
@@ -233,7 +239,7 @@ Webhook do AbacatePay:
 
 - O `X-Webhook-Secret` é comparado em tempo constante.
 - Eventos repetidos são descartados pelo `id` do evento (`log_...`), que se repete nas retentativas.
-- O `X-Webhook-Signature` usa uma chave pública fixa e garante só a integridade do corpo, não a origem.
+- O `X-Webhook-Signature` (HMAC-SHA256 com a chave pública fixa do AbacatePay) precisa bater com o corpo. Ele garante só a integridade, não a origem; a origem vem do segredo.
 
 Por padrão, dados do pagador (nome, CPF mascarado) não são repassados ao vendedor (LGPD).
 
@@ -245,49 +251,49 @@ Por padrão, dados do pagador (nome, CPF mascarado) não são repassados ao vend
 
 | Perfil | Pacote | O que faz |
 |---|---|---|
-| **Quem vende** (API, conteúdo) | `@p-x402/server` | Protege rotas com 402 e Pix. Adapters por subpath: `/hono`, `/express`, `/elysia`, `/fastify` |
-| **Quem compra** (app, agente de IA) | `@p-x402/client` | `fetch` que paga sozinho, com policy de gasto. Payers: `/terminal`, simulate, API bancária |
-| **Quem opera o facilitator** | `@p-x402/facilitator` | App Hono pronta com `/verify`, `/settle`, `/supported`, `/pix/charges` e webhooks. Stores plugáveis |
-| **Integração com PSP** | `@p-x402/abacatepay` | Implementa `PixProvider`. Outros depois: Efí, Inter, Woovi, Mercado Pago... |
-| Base comum | `@p-x402/core` | Tipos, schemas **Zod v4**, codec dos headers, erros e utilidades de teste |
+| **Quem vende** (API, conteúdo) | `@p-x402/server` | Protege rotas com 402 e Pix. Núcleo sem framework + adapter `/hono` (outros depois) |
+| **Quem compra** (app, agente de IA) | `@p-x402/client` | `fetch` que paga sozinho, com policy de gasto. Payer de desenvolvimento: `simulatePayer` (terminal e API bancária depois) |
+| **Quem opera o facilitator** | `apps/facilitator` | App Hono pronta com `/verify`, `/settle`, `/supported`, `/pix/charges` e webhooks. Stores plugáveis |
+| **Integração com PSP** | `@p-x402/psp` | Interface `PixProvider`, adapter AbacatePay e PSP mock em memória. Outros depois: Efí, Inter, Woovi, Mercado Pago... |
+| Base comum | `@p-x402/core` | Tipos, schemas **Zod v4**, codec dos headers, erros tipados, leitura do BR Code |
 
 Stack: **Bun** (desenvolvimento, testes, deploy do facilitator), **Hono**, **Zod v4**, Biome.
 
-### Uso (planejado)
+### Uso
 
 **Quem vende (Hono):**
 
 ```ts
 import { pixPaywall } from "@p-x402/server/hono"
 
-const pix = pixPaywall({ facilitator: "https://facilitator.exemplo.com", token: process.env.PIX402_TOKEN })
+const pix = pixPaywall({ facilitatorUrl: "https://facilitator.exemplo.com", token: process.env.PX402_MERCHANT_TOKEN })
 
-app.get("/relatorio", pix({ amount: 500, description: "Relatório PDF" }), (c) => c.json(gerar()))
-// c.get("pix402") → settlement (chargeId, valor)
+app.get("/relatorio", pix({ amount: "500", description: "Relatório PDF" }), (c) => c.json(gerar()))
+// c.get("px402") → { chargeId, amount }
 ```
 
 O núcleo do servidor não conhece framework. Os adapters são finos por cima disto:
 
 ```ts
-const result = await paywall.handle(request, { amount: 500 })
-if (result.type === "payment-required") return result.response // 402 pronto
-// result.type === "paid" → executa o handler e chama result.finalize(response) para incluir o PAYMENT-RESPONSE
+const result = await paywall.handle(request, { amount: "500" }, { clientIp })
+if (result.type === "response") return result.response // 402, 429, 400 ou 502 pronto
+// result.type === "paid" → executa o handler e chama result.finalize(response):
+// se o handler respondeu sem erro, ele chama /settle e inclui o PAYMENT-RESPONSE
 ```
 
 **Quem compra (app ou agente):**
 
 ```ts
-import { wrapFetch } from "@p-x402/client"
-import { terminalPayer } from "@p-x402/client/terminal"
+import { simulatePayer, wrapFetch } from "@p-x402/client"
 
 const fetchPago = wrapFetch(fetch, {
-  payer: terminalPayer(),                 // ou bankApiPayer(), simulatePayer() em dev
+  payer: simulatePayer({ facilitatorUrl }), // em dev; um payer real implementa { pay(cobrança) }
   policy: {
     maxPerRequest: 1000,                  // R$ 10,00
     maxTotal: 5000,                       // orçamento da sessão
     allowedOrigins: ["api.exemplo.com.br"],
   },
-  onPayment: (e) => log(e),               // auditoria
+  onPayment: (e) => log(e),               // auditoria; e.paymentSignature permite retomar o pagamento
 })
 
 const res = await fetchPago("https://api.exemplo.com.br/relatorio")
@@ -296,18 +302,20 @@ const res = await fetchPago("https://api.exemplo.com.br/relatorio")
 **Quem opera o facilitator:**
 
 ```ts
-import { createFacilitator, staticMerchants } from "@p-x402/facilitator"
+import { createFacilitator } from "@p-x402/facilitator"
 import { bunSqliteStore } from "@p-x402/facilitator/stores/bun-sqlite"
-import { abacatePay } from "@p-x402/abacatepay"
+import { createAbacatePayProvider } from "@p-x402/psp"
 
 const app = createFacilitator({
-  provider: abacatePay({ apiKey: process.env.ABACATEPAY_API_KEY }),
-  store: bunSqliteStore("pix402.sqlite"),   // ou memoryStore(), postgresStore(pool)
-  merchants: staticMerchants([{ id: "loja1", token: "...", payTo: "loja1" }]),
-  webhookSecret: process.env.ABACATEPAY_WEBHOOK_SECRET,
+  provider: createAbacatePayProvider({
+    apiKey: process.env.ABACATEPAY_API_KEY,
+    webhookSecret: process.env.ABACATEPAY_WEBHOOK_SECRET,
+  }),
+  store: bunSqliteStore("p-x402.sqlite"),   // ou memoryStore()
+  merchants: [{ id: "loja1", token: "...", payTo: "loja1" }],
 })
 
-export default app // Bun.serve, Node ou Workers
+Bun.serve({ port: 4020, fetch: app.fetch })
 ```
 
 **Novo PSP:** basta implementar uma interface pequena.
@@ -316,10 +324,11 @@ export default app // Bun.serve, Node ou Workers
 interface PixProvider {
   name: string
   minAmount: number
+  minExpiresIn: number
   createCharge(input: CreatePixChargeInput): Promise<PixCharge>
-  getCharge(id: string): Promise<PixChargeStatus>
+  getCharge(id: string): Promise<PixChargeState>
   simulatePayment?(id: string): Promise<void>
-  parseWebhook?(req: Request): Promise<WebhookEvent | null>
+  parseWebhook?(req: Request): Promise<PixWebhookEvent>
 }
 ```
 
@@ -329,7 +338,7 @@ interface PixProvider {
 2. **Adapters por subpath, não por pacote.** Frameworks entram como `peerDependencies` opcionais.
 3. **Dependências pesadas ficam isoladas** em subpaths (`@p-x402/client/terminal`, `@p-x402/facilitator/stores/bun-sqlite`).
 4. **Tudo plugável por interface:** `PixProvider`, `ChargeStore`, `PixPayer`, `MerchantResolver`.
-5. **Erros tipados:** `Pix402Error` com `code` estável. Os códigos fazem parte da API pública e seguem semver.
+5. **Erros tipados:** `Px402Error` com `code` estável. Os códigos fazem parte da API pública e seguem semver.
 6. **Policy de gasto ligada por padrão** no cliente, com limites conservadores.
 7. **Testes de contrato** exportados em `@p-x402/core/testing`, que todo `PixProvider` e todo `ChargeStore` precisam passar.
 8. **Build:** `tsdown` (ESM + `.d.ts`), changesets para versionamento e CI em matriz (Bun + Node 20/22).
@@ -364,8 +373,8 @@ O facilitator e o PSP formam **um serviço HTTP implementado uma vez só** (em T
 
 ```java
 @Bean
-Pix402 pix402() {
-  return Pix402.builder().facilitator("https://facilitator.exemplo.com").token(env("PIX402_TOKEN")).build();
+Px402 px402() {
+  return Px402.builder().facilitator("https://facilitator.exemplo.com").token(env("PX402_TOKEN")).build();
 }
 
 @GetMapping("/relatorio")
@@ -373,26 +382,26 @@ Pix402 pix402() {
 public Relatorio relatorio() { ... }
 
 // cliente / agente
-HttpClient http = Pix402Client.wrap(HttpClient.newHttpClient(), payer, Policy.maxPerRequest(1000));
+HttpClient http = Px402Client.wrap(HttpClient.newHttpClient(), payer, Policy.maxPerRequest(1000));
 ```
 
 **Python (FastAPI e agentes):**
 
 ```python
-pix = Pix402(facilitator="https://facilitator.exemplo.com", token=os.environ["PIX402_TOKEN"])
+pix = Px402(facilitator="https://facilitator.exemplo.com", token=os.environ["PX402_TOKEN"])
 
 @app.get("/relatorio", dependencies=[Depends(pix.paywall(amount=500))])
 def relatorio(): ...
 
 # cliente: transport do httpx
-client = httpx.Client(transport=pix402.Transport(payer=terminal_payer(), max_per_request=1000))
+client = httpx.Client(transport=px402.Transport(payer=terminal_payer(), max_per_request=1000))
 ```
 
 **Go:**
 
 ```go
-mux.Handle("/relatorio", pix.Paywall(pix402.Price{Amount: 500})(handler)) // net/http; chi e gin via adapter
-client := &http.Client{Transport: pix402.NewRoundTripper(http.DefaultTransport, payer, policy)}
+mux.Handle("/relatorio", pix.Paywall(px402.Price{Amount: 500})(handler)) // net/http; chi e gin via adapter
+client := &http.Client{Transport: px402.NewRoundTripper(http.DefaultTransport, payer, policy)}
 ```
 
 ### Frameworks e registros
@@ -400,7 +409,7 @@ client := &http.Client{Transport: pix402.NewRoundTripper(http.DefaultTransport, 
 | Linguagem | Servidor | Cliente | Registro |
 |---|---|---|---|
 | TypeScript | Hono, Express, Elysia, Fastify, Next | `fetch` | npm `@p-x402/*` |
-| Python | FastAPI/Starlette, Django, Flask | `httpx`, `requests` | PyPI `pix402` |
+| Python | FastAPI/Starlette, Django, Flask | `httpx`, `requests` | PyPI `px402` |
 | Java/Kotlin | Spring Boot (starter), Quarkus | `HttpClient`, OkHttp interceptor | Maven Central |
 | Go | middleware `net/http` | `http.RoundTripper` | módulo Go no GitHub |
 | PHP | Laravel middleware, PSR-15 | Guzzle middleware | Packagist |
@@ -418,29 +427,80 @@ Cada SDK tem a própria versão semver e declara duas compatibilidades: a versã
 
 ---
 
-## Layout do repositório (planejado)
+## Layout do repositório
 
-O projeto começa em monorepo, para que uma mudança no protocolo atualize spec, test-vectors e SDKs no mesmo PR. Quando houver três ou mais linguagens maduras, cada uma pode ir para um repositório próprio, consumindo o `spec/` versionado.
+Monorepo com workspaces do Bun. As bibliotecas (`packages/*`) usam só padrões web; os apps podem usar APIs do Bun.
 
 ```
 p-x402/
-├── spec/
-│   ├── schemas/            JSON Schema gerado do Zod
-│   ├── openapi.yaml        API do facilitator
-│   ├── test-vectors/       casos de conformidade
-│   └── conformance/        facilitator + PSP mock em Docker
-├── sdks/
-│   ├── typescript/
-│   │   └── packages/       core, server, client, facilitator, abacatepay
-│   ├── python/
-│   └── java/
+├── packages/
+│   ├── core/          tipos e schemas Zod v4, codec dos headers, Px402Error, leitura do BR Code
+│   ├── psp/           interface PixProvider, adapter AbacatePay, PSP mock em memória
+│   ├── server/        paywall sem framework + adapter Hono (@p-x402/server/hono)
+│   └── client/        wrapFetch com policy de gasto, simulatePayer
 ├── apps/
-│   └── facilitator/        deploy do facilitator (Bun + sqlite)
-├── examples/               hono-server, express-server, agent-client, spring-boot...
+│   ├── facilitator/   app Hono: /pix/charges, /verify, /settle, /supported, /webhooks/pix; stores memória e bun:sqlite
+│   ├── demo-server/   API de exemplo com GET /relatorio a R$ 5,00
+│   └── demo-client/   comprador de exemplo e a demo tudo-em-um (bun run demo:local)
 └── docs/
-    ├── scheme_exact_pix.md spec do scheme no formato dos specs do x402
-    └── architecture.md
 ```
+
+## Como executar
+
+Requisito: [Bun](https://bun.sh) 1.3 ou mais novo.
+
+O passo a passo completo (como o fluxo funciona, o que cada teste cobre, teste manual com curl e próximos passos) está em [`docs/guia-mvp.md`](docs/guia-mvp.md).
+
+```bash
+bun install
+```
+
+Demo completa num processo só, com o PSP mock (nenhum dinheiro real): sobe o facilitator e a API de exemplo em portas livres e faz uma compra de R$ 5,00, imprimindo cada passo (`402` com a cobrança, pagamento, `402 settlement_pending` enquanto o PSP não confirma, `200` com o `PAYMENT-RESPONSE`).
+
+```bash
+bun run demo:local
+```
+
+Testes, tipos e lint:
+
+```bash
+bun test
+```
+
+```bash
+bun run typecheck
+```
+
+```bash
+bun run lint
+```
+
+Em processos separados: copie `.env.example` para `.env` (o Bun lê o `.env` sozinho), escolha um `PX402_MERCHANT_TOKEN` e rode cada comando num terminal.
+
+```bash
+cp .env.example .env
+```
+
+```bash
+bun run dev:facilitator
+```
+
+```bash
+bun run dev:server
+```
+
+```bash
+bun run demo
+```
+
+Com o `.env.example`, o facilitator usa o PSP mock, grava as cobranças em `p-x402.sqlite` e libera a rota de desenvolvimento `POST /dev/charges/:id/simulate-payment`, que o `simulatePayer` do cliente usa para "pagar". Para o AbacatePay, use `PX402_PROVIDER=abacatepay` com `ABACATEPAY_API_KEY` e `ABACATEPAY_WEBHOOK_SECRET`. O adapter já foi testado contra o modo dev do AbacatePay: criar, consultar e simular pagamento funcionam de ponta a ponta. Dois detalhes do modo dev: o status leva alguns segundos para virar `PAID` depois do `simulate-payment`, e o BR Code devolvido não é um EMV válido. Por isso o `simulatePayer`, que nunca paga o BR Code, dispensa a checagem dele. O webhook também foi testado no sandbox, por um túnel do cloudflared (passo a passo em [`docs/guia-mvp.md`](docs/guia-mvp.md)). Sem webhook o fluxo funciona igual, só um pouco mais lento, porque o facilitator consulta o PSP a cada tentativa.
+
+Limites conhecidos desta versão:
+
+- A trava que impede duas requisições com a mesma cobrança de rodarem o handler ao mesmo tempo vale por processo. Com várias instâncias do vendedor, use roteamento fixo por cobrança ou handlers idempotentes.
+- O `/settle` acontece quando o handler devolve a `Response`. Uma resposta em streaming que falhe depois disso já foi liquidada.
+- `HEAD` e `OPTIONS` em rotas pagas recebem `402` sem criar cobrança.
+- Os limites de taxa ficam em memória, por processo.
 
 ---
 
@@ -456,13 +516,17 @@ p-x402/
 
 ## Roadmap
 
-- [ ] `core`: schemas Zod v4, headers, erros, utilidades de teste
-- [ ] `abacatepay` + provider mock
-- [ ] `facilitator` com `memoryStore` e `bun-sqlite`
-- [ ] `server` com núcleo independente de framework + adapter Hono
-- [ ] `client` com `wrapFetch`, policy e payers simulate/terminal
-- [ ] E2E: exemplo Hono → facilitator → client, com mock
-- [ ] Integração real com o modo teste do AbacatePay (`simulate-payment`)
+- [x] `core`: schemas Zod v4, headers, erros
+- [ ] `core/testing`: testes de contrato para `PixProvider` e `ChargeStore`
+- [x] `psp`: provider mock e adapter AbacatePay
+- [x] `facilitator` com `memoryStore` e `bun-sqlite`
+- [x] `server` com núcleo independente de framework + adapter Hono
+- [x] `client` com `wrapFetch`, policy e payer simulate
+- [ ] payer de terminal (QR) e payer via API bancária
+- [x] E2E: exemplo Hono → facilitator → client, com mock
+- [x] Integração com o modo dev do AbacatePay (`simulate-payment`)
+- [x] Webhook do AbacatePay (testado no sandbox via túnel do cloudflared)
+- [ ] Webhook com URL fixa (túnel nomeado ou deploy)
 - [ ] Build (tsdown), changesets, CI em matriz e docs
 - [ ] `spec/`: JSON Schema, OpenAPI, test-vectors e conformidade em Docker
 - [ ] SDK Python
@@ -481,4 +545,4 @@ p-x402/
 
 ## Licença
 
-A definir.
+[Apache-2.0](LICENSE).
