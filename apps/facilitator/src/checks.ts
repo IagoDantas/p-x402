@@ -1,5 +1,6 @@
 import {
   FacilitatorRequestSchema,
+  isPx402Error,
   matchPixRequirements,
   type PaymentRequirements,
   PIX_NETWORK,
@@ -82,7 +83,7 @@ function pixKindCheck(req: PaymentRequirements): Px402ErrorCode | null {
 }
 
 /** Decides from the PSP answer alone whether the charge is payable now. */
-export function judgePsp(
+function judgePsp(
   record: ChargeRecord,
   observation: PspObservation,
   now: number,
@@ -189,6 +190,12 @@ export async function runChecks(ctx: CheckContext, body: unknown): Promise<Check
   try {
     observation = { state: await ctx.observe(chargeId) }
   } catch (error) {
+    // Answered as settlement_pending; log the cause (never the provider key, which errors omit).
+    console.error(
+      "facilitator: getCharge failed",
+      chargeId,
+      isPx402Error(error) ? error.code : error,
+    )
     observation = { error }
   }
   const reason = judgePsp(record, observation, ctx.now(), ctx.paidGraceMs)
