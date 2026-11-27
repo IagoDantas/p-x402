@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+.git
+.env
+.env.*
+.claude
+.wrangler
+docs
+dist
+**/dist
+*.sqlite
+*.sqlite-*
+*.db

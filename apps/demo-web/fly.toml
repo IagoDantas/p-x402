@@ -1,0 +1,36 @@
+# Fly.io config for the p-x402 public demo. Deploy from the repository root:
+#   fly deploy . --config apps/demo-web/fly.toml --dockerfile apps/demo-web/Dockerfile
+# Secrets (never here): fly secrets set ABACATEPAY_API_KEY=... ABACATEPAY_WEBHOOK_SECRET=... DEMO_ADMIN_SECRET=...
+app = "p-x402-demo"
+primary_region = "gru"
+
+[env]
+  NODE_ENV = "production"
+  DEMO_WEB_PORT = "8080"
+  PX402_DB_PATH = "/data/p-x402.sqlite"
+  DEMO_CLIENT_IP_HEADER = "fly-client-ip"
+  DEMO_ALLOWED_ORIGINS = "https://demo.p-x402.com"
+  DEMO_RESET_UTC_HOUR = "7"
+
+[[mounts]]
+  source = "px402_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always on: the demo must answer unattended, and SSE needs a live process.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
