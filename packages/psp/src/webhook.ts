@@ -1,4 +1,4 @@
-import { Px402Error, timingSafeEqual } from "@p-x402/core"
+import { bytesToBase64, Px402Error, timingSafeEqual } from "@p-x402/core"
 import { z } from "zod"
 import type { PixWebhookEvent, PixWebhookKind } from "./types"
 
@@ -22,10 +22,9 @@ export async function signAbacatePayWebhook(rawBody: string): Promise<string> {
     false,
     ["sign"],
   )
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, textEncoder.encode(rawBody)))
-  let binary = ""
-  for (const byte of mac) binary += String.fromCharCode(byte)
-  return btoa(binary)
+  return bytesToBase64(
+    new Uint8Array(await crypto.subtle.sign("HMAC", key, textEncoder.encode(rawBody))),
+  )
 }
 
 /** Webhook bodies above this size (in UTF-8 bytes) are refused. */
