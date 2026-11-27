@@ -278,9 +278,10 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
     try {
       await store.insert(record)
     } catch (error) {
-      // The PSP charge exists but we cannot track it; nobody will be asked to pay it.
+      // Our own fault, not the PSP's: the PSP charge exists but we cannot track it, so nobody
+      // will be asked to pay it.
       console.error("facilitator: storing charge failed", charge.id, error)
-      return c.json(errorBody("psp_error"), 502)
+      return c.json(errorBody("unexpected_error"), 500)
     }
     return c.json({ paymentRequirements: built.data })
   })

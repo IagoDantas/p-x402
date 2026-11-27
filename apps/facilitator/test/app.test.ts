@@ -239,7 +239,7 @@ for (const [storeName, makeStore] of backends) {
       expect(JSON.stringify(json)).not.toContain("base64")
     })
 
-    test("store.insert failure after the PSP charge → 502 psp_error", async () => {
+    test("store.insert failure after the PSP charge → 500 unexpected_error (our fault, not the PSP's)", async () => {
       const inner = makeStore()
       const store: ChargeStore = {
         ...inner,
@@ -249,8 +249,8 @@ for (const [storeName, makeStore] of backends) {
       }
       const f = setup(() => store)
       const res = await f.post("/pix/charges", { resource: { url: RESOURCE }, amount: "500" })
-      expect(res.status).toBe(502)
-      expect(await res.json()).toEqual({ error: "psp_error" })
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({ error: "unexpected_error" })
       expect(f.mock.calls.createCharge).toBe(1)
     })
 
