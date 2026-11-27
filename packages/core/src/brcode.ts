@@ -30,10 +30,14 @@ export function crc16(text: string): string {
   return crc.toString(16).toUpperCase().padStart(4, "0")
 }
 
+/** Encodes TLV fields (id, two-digit length, value) without a CRC; used for nested templates. */
+export function encodeTlv(fields: EmvField[]): string {
+  return fields.map((f) => `${f.id}${String(f.value.length).padStart(2, "0")}${f.value}`).join("")
+}
+
 /** Encodes TLV fields and appends tag 63 with the CRC. */
 export function encodeEmv(fields: EmvField[]): string {
-  const body = fields.map((f) => `${f.id}${String(f.value.length).padStart(2, "0")}${f.value}`)
-  const withoutCrc = `${body.join("")}6304`
+  const withoutCrc = `${encodeTlv(fields)}6304`
   return `${withoutCrc}${crc16(withoutCrc)}`
 }
 
@@ -68,10 +72,14 @@ export function brlToCentavos(value: string): string | undefined {
   return total.toString()
 }
 
-/** Returns null when the text is not a well-formed EMV payload. */
+/**
+ * Returns null when the text is not a well-formed EMV payload, including when a top-level tag
+ * appears twice: decoders disagree on which copy wins, so an amount check on one copy proves nothing.
+ */
 export function parseBrCode(text: string): BrCodeInfo | null {
   const fields = parseEmv(text)
   if (!fields || fields.length === 0) return null
+  if (new Set(fields.map((f) => f.id)).size !== fields.length) return null
   const last = fields[fields.length - 1]
   const crcValid =
     last !== undefined &&

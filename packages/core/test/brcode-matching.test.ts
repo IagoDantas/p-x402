@@ -3,6 +3,7 @@ import {
   brlToCentavos,
   crc16,
   encodeEmv,
+  encodeTlv,
   matchPixRequirements,
   type PixPaymentRequirements,
   parseBrCode,
@@ -28,6 +29,41 @@ describe("BR Code", () => {
     const tampered = code.replace("5.00", "9.00")
     expect(parseBrCode(tampered)?.crcValid).toBe(false)
     expect(parseBrCode("garbage")).toBeNull()
+  })
+
+  test("refuses a code that repeats a top-level tag, even with a valid CRC", () => {
+    const code = encodeEmv([
+      { id: "00", value: "01" },
+      { id: "26", value: "0014br.gov.bcb.pix0105abcde" },
+      { id: "54", value: "5.00" },
+      { id: "54", value: "999.00" },
+      { id: "58", value: "BR" },
+    ])
+    expect(parseBrCode(code)).toBeNull()
+  })
+
+  test("reports a location URL (dynamic code)", () => {
+    const code = encodeEmv([
+      { id: "00", value: "01" },
+      {
+        id: "26",
+        value: encodeTlv([
+          { id: "00", value: "br.gov.bcb.pix" },
+          { id: "25", value: "pix.example.com/qr/v2/cob/abc" },
+        ]),
+      },
+      { id: "54", value: "5.00" },
+    ])
+    expect(parseBrCode(code)?.hasLocation).toBe(true)
+  })
+
+  test("encodeTlv writes id, two-digit length and value", () => {
+    expect(
+      encodeTlv([
+        { id: "00", value: "01" },
+        { id: "05", value: "abcdefghij" },
+      ]),
+    ).toBe("000201" + "0510abcdefghij")
   })
 
   test("brlToCentavos", () => {
