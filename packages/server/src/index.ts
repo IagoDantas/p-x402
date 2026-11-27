@@ -162,7 +162,11 @@ function routeAmount(amount: string | number): string {
   return text
 }
 
-function validateRoute(route: PaywallRoute): string {
+/**
+ * Checks a route's config and returns its amount as a string. Throws `Px402Error("invalid_request")`.
+ * `handle` calls it on every request; call it once when wiring a route to fail at startup instead.
+ */
+export function validateRoute(route: PaywallRoute): string {
   const amount = routeAmount(route.amount)
   if (route.description !== undefined && route.description.length > 140) {
     throw new Px402Error("invalid_request", "route description is longer than 140 characters")

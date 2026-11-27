@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono"
 import { createMiddleware } from "hono/factory"
-import { createPaywall, type PaywallConfig, type PaywallRoute } from "./index"
+import { createPaywall, type PaywallConfig, type PaywallRoute, validateRoute } from "./index"
 
 export type Px402Variables = { px402: { chargeId: string; amount: string } }
 
@@ -41,8 +41,10 @@ export function pixPaywall(
 ): (route: PaywallRoute) => MiddlewareHandler<{ Variables: Px402Variables }> {
   const paywall = createPaywall(config)
   const getClientIp = config.getClientIp ?? defaultClientIp
-  return (route) =>
-    createMiddleware<{ Variables: Px402Variables }>(async (c, next) => {
+  return (route) => {
+    // A bad route fails when the app is wired, not when the first buyer arrives.
+    validateRoute(route)
+    return createMiddleware<{ Variables: Px402Variables }>(async (c, next) => {
       const clientIp = getClientIp(c)
       const result = await paywall.handle(c.req.raw, route, clientIp ? { clientIp } : {})
       if (result.type === "response") return result.response
@@ -65,6 +67,7 @@ export function pixPaywall(
         c.res = out
       }
     })
+  }
 }
 
 export type { PaywallConfig, PaywallRoute } from "./index"

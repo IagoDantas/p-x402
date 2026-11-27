@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
-import { decodePaymentRequired, decodeSettlementResponse } from "@p-x402/core"
+import { decodePaymentRequired, decodeSettlementResponse, Px402Error } from "@p-x402/core"
 import { Hono } from "hono"
 import { type HonoPaywallConfig, type Px402Variables, pixPaywall } from "../src/hono"
 import {
@@ -78,6 +78,17 @@ describe("pixPaywall (Hono)", () => {
     const settlement = decodeSettlementResponse(second.headers.get("PAYMENT-RESPONSE") ?? "")
     expect(settlement.success).toBe(true)
     expect(stub.events).toEqual(["/pix/charges", "/verify", "handler", "/settle"])
+  })
+
+  test("a bad route throws when the middleware is built, before any request", () => {
+    const pix = pixPaywall({
+      facilitatorUrl: FACILITATOR,
+      token: TOKEN,
+      fetch: stubFacilitator().fetch,
+    })
+    expect(() => pix({ amount: "abc" })).toThrow(Px402Error)
+    expect(() => pix({ amount: "500", resource: "ftp://x" })).toThrow(Px402Error)
+    expect(() => pix({ amount: "500" })).not.toThrow()
   })
 
   test("env requestIP feeds the per-IP cap", async () => {
