@@ -1,4 +1,4 @@
-import { encodeEmv, Px402Error } from "@p-x402/core"
+import { encodeEmv, encodeTlv, Px402Error } from "@p-x402/core"
 import type {
   CreatePixChargeInput,
   PixCharge,
@@ -200,7 +200,7 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
 
 /** A well-formed dynamic-style BR Code (EMV, tag 54 amount, valid CRC) that no bank will accept. */
 export function mockBrCode(chargeId: string, amountCentavos: number): string {
-  const merchantAccount = encodeEmvValue([
+  const merchantAccount = encodeTlv([
     { id: "00", value: "br.gov.bcb.pix" },
     { id: "01", value: `mock-${chargeId}`.slice(0, 77) },
   ])
@@ -214,10 +214,6 @@ export function mockBrCode(chargeId: string, amountCentavos: number): string {
     { id: "58", value: "BR" },
     { id: "59", value: "P-X402 MOCK" },
     { id: "60", value: "SAO PAULO" },
-    { id: "62", value: encodeEmvValue([{ id: "05", value: chargeId.slice(-25) }]) },
+    { id: "62", value: encodeTlv([{ id: "05", value: chargeId.slice(-25) }]) },
   ])
-}
-
-function encodeEmvValue(fields: { id: string; value: string }[]): string {
-  return fields.map((f) => `${f.id}${String(f.value.length).padStart(2, "0")}${f.value}`).join("")
 }
