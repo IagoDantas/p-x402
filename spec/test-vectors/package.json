@@ -1,0 +1,14 @@
+{
+  "name": "@p-x402/test-vectors",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "bun generate.ts"
+  },
+  "dependencies": {
+    "@p-x402/client": "workspace:*",
+    "@p-x402/core": "workspace:*",
+    "@p-x402/server": "workspace:*"
+  }
+}

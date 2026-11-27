@@ -365,7 +365,7 @@ O facilitator e o PSP formam **um serviço HTTP implementado uma vez só** (em T
   - Python: `datamodel-code-generator` (Pydantic v2)
   - Go: `oapi-codegen`
   - PHP, C# e Ruby: `openapi-generator`
-- **Conformidade:** `spec/test-vectors/` traz headers codificados, payloads válidos e inválidos, respostas esperadas e códigos de erro. `spec/conformance/` traz uma imagem Docker do facilitator com PSP mock. Cada SDK roda os dois no próprio CI, o que garante que todas as linguagens falam o mesmo protocolo.
+- **Conformidade:** [`spec/test-vectors/`](spec/test-vectors/README.md) traz headers codificados, objetos válidos e inválidos, comparação de requirements, transcrições do cliente e códigos de erro, gerados do código TypeScript com `bun run vectors` (o `bun test` falha se os arquivos ficarem desatualizados). `spec/conformance/` traz uma imagem Docker do facilitator com PSP mock. Cada SDK roda os dois no próprio CI, o que garante que todas as linguagens falam o mesmo protocolo.
 
 ### Como fica em cada linguagem
 
@@ -442,6 +442,8 @@ p-x402/
 │   ├── facilitator/   app Hono: /pix/charges, /verify, /settle, /supported, /webhooks/pix; stores memória e bun:sqlite
 │   ├── demo-server/   API de exemplo com GET /relatorio a R$ 5,00
 │   └── demo-client/   comprador de exemplo e a demo tudo-em-um (bun run demo:local)
+├── spec/
+│   └── test-vectors/  vetores de teste do protocolo para SDKs em outras linguagens (bun run vectors)
 └── docs/
 ```
 
@@ -473,6 +475,12 @@ bun run typecheck
 
 ```bash
 bun run lint
+```
+
+Os vetores de teste em `spec/test-vectors/` são gerados do código; depois de mudar o protocolo, regenere-os (o `bun test` acusa a diferença):
+
+```bash
+bun run vectors
 ```
 
 Em processos separados: copie `.env.example` para `.env` (o Bun lê o `.env` sozinho), escolha um `PX402_MERCHANT_TOKEN` e rode cada comando num terminal.
