@@ -168,6 +168,19 @@ describe("AbacatePay provider", () => {
     expect(state).toEqual({ id, status: "PAID" })
   })
 
+  test("getCharge keeps the status when expiresAt is unusable, and passes a good one on", async () => {
+    for (const expiresAt of ["", "soon", 42, null]) {
+      const s = stub(() => json({ data: { id: "pix_char_1", status: "PAID", expiresAt } }))
+      expect(await provider(s.fetch).getCharge("pix_char_1")).toEqual({
+        id: "pix_char_1",
+        status: "PAID",
+      })
+    }
+    const good = "2026-11-25T15:05:00.000Z"
+    const s = stub(() => json({ data: { id: "pix_char_1", status: "PAID", expiresAt: good } }))
+    expect((await provider(s.fetch).getCharge("pix_char_1")).expiresAt).toBe(good)
+  })
+
   test("getCharge refuses an answer about another charge", async () => {
     const s = stub(() => json({ data: { id: "pix_char_other", status: "PAID" } }))
     await expectCode(provider(s.fetch).getCharge("pix_char_1"), "psp_error")

@@ -54,7 +54,8 @@ const CreateDataSchema = z.object({
 const CheckDataSchema = z.object({
   id: z.string().min(1).max(128),
   status: z.string(),
-  expiresAt: isoDate.nullish(),
+  // Informational only (the facilitator uses its stored expiresAt): a bad value must not hide the status.
+  expiresAt: z.unknown().optional(),
 })
 
 const EnvelopeSchema = z.object({ data: z.unknown(), error: z.unknown().optional() })
@@ -175,7 +176,9 @@ export function createAbacatePayProvider(options: AbacatePayProviderOptions): Pi
       }
       // TODO: map paidAt once the check response documents a payment time field.
       const state: PixChargeState = { id: data.id, status: mapAbacatePayStatus(data.status) }
-      if (data.expiresAt) state.expiresAt = data.expiresAt
+      if (typeof data.expiresAt === "string" && isoDate.safeParse(data.expiresAt).success) {
+        state.expiresAt = data.expiresAt
+      }
       return state
     },
 
