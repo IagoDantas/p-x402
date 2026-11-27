@@ -287,6 +287,11 @@ export function createPaywall(config: PaywallConfig): Paywall {
     })
   }
 
+  /** Charge creation failed: nothing was paid, so no PAYMENT-RESPONSE receipt is attached. */
+  function chargeFacilitatorError(): Response {
+    return jsonResponse(502, errorBody("facilitator_error"))
+  }
+
   function unauthorized(path: string): Response {
     console.error(`p-x402: facilitator rejected the merchant token (401 on ${path})`)
     return jsonResponse(500, errorBody("unauthorized"))
@@ -392,7 +397,7 @@ export function createPaywall(config: PaywallConfig): Paywall {
       amount,
       ...(route.description !== undefined ? { description: route.description } : {}),
     })
-    if (!answer.ok || answer.status >= 500) return facilitatorError("")
+    if (!answer.ok || answer.status >= 500) return chargeFacilitatorError()
     if (answer.status === 401) return unauthorized("/pix/charges")
     if (answer.status === 400) {
       console.error("p-x402: facilitator refused the charge request (400)")
@@ -405,11 +410,11 @@ export function createPaywall(config: PaywallConfig): Paywall {
       })
     }
     const parsed = CreateChargeResponseSchema.safeParse(answer.body)
-    if (answer.status !== 200 || !parsed.success) return facilitatorError("")
+    if (answer.status !== 200 || !parsed.success) return chargeFacilitatorError()
     const requirements = parsed.data.paymentRequirements
     // The charge must be for this route and this resource.
     if (requirements.amount !== amount || requirements.extra.resourceUrl !== resource.url) {
-      return facilitatorError(requirements.extra.chargeId)
+      return chargeFacilitatorError()
     }
     const paymentRequired: PaymentRequired = {
       x402Version: X402_VERSION,

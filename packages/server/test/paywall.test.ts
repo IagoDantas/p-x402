@@ -290,8 +290,9 @@ describe("facilitator errors on /pix/charges", () => {
         await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }),
       )
       expect(res.status).toBe(502)
-      const settlement = decodeSettlementResponse(res.headers.get("PAYMENT-RESPONSE") ?? "")
-      expect(settlement.errorReason).toBe("facilitator_error")
+      expect(await res.json()).toEqual({ error: "facilitator_error" })
+      // Nothing was paid: no settlement receipt.
+      expect(res.headers.get("PAYMENT-RESPONSE")).toBeNull()
     }
   })
 
@@ -304,8 +305,8 @@ describe("facilitator errors on /pix/charges", () => {
       )
       expect(res.status).toBe(502)
       expect(res.headers.get("PAYMENT-REQUIRED")).toBeNull()
-      const settlement = decodeSettlementResponse(res.headers.get("PAYMENT-RESPONSE") ?? "")
-      expect(settlement.errorReason).toBe("facilitator_error")
+      expect(res.headers.get("PAYMENT-RESPONSE")).toBeNull()
+      expect(await res.json()).toEqual({ error: "facilitator_error" })
     }
   })
 })
