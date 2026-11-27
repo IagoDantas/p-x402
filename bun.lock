@@ -43,6 +43,14 @@
         "zod": "4.6.7",
       },
     },
+    "examples/interop": {
+      "name": "@p-x402/interop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@p-x402/client": "workspace:*",
+        "@p-x402/core": "workspace:*",
+      },
+    },
     "packages/client": {
       "name": "@p-x402/client",
       "version": "0.0.0",
@@ -252,6 +260,8 @@
     "@p-x402/demo-server": ["@p-x402/demo-server@workspace:apps/demo-server"],
 
     "@p-x402/facilitator": ["@p-x402/facilitator@workspace:apps/facilitator"],
+
+    "@p-x402/interop": ["@p-x402/interop@workspace:examples/interop"],
 
     "@p-x402/psp": ["@p-x402/psp@workspace:packages/psp"],
 

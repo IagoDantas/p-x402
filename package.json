@@ -5,7 +5,8 @@
   "workspaces": [
     "packages/*",
     "apps/*",
-    "spec/test-vectors"
+    "spec/test-vectors",
+    "examples/interop"
   ],
   "scripts": {
     "dev:facilitator": "bun --watch apps/facilitator/src/index.ts",
@@ -15,6 +16,7 @@
     "vectors": "bun spec/test-vectors/generate.ts",
     "test": "bun test",
     "test:python": "sh sdks/python/scripts/test.sh",
+    "interop": "bun examples/interop/run.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.lib.json",
     "lint": "biome check .",
     "format": "biome check --write .",
