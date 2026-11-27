@@ -6,6 +6,7 @@
 import { buildCodecVectors } from "./generator/codec"
 import { buildErrorCodeVectors } from "./generator/error-codes"
 import { buildMatchingVectors } from "./generator/matching"
+import { buildPaywallVectors } from "./generator/paywall"
 import { buildTranscriptVectors } from "./generator/transcripts"
 import { buildValidationVectors } from "./generator/validation"
 
@@ -17,6 +18,7 @@ export const VECTOR_FILES = [
   "requirement-matching.json",
   "client-transcripts.json",
   "error-codes.json",
+  "paywall-transcripts.json",
 ] as const
 
 export type VectorFile = (typeof VECTOR_FILES)[number]
@@ -29,6 +31,7 @@ export async function buildVectorFiles(): Promise<Record<VectorFile, string>> {
     "requirement-matching.json": buildMatchingVectors(),
     "client-transcripts.json": await buildTranscriptVectors(),
     "error-codes.json": buildErrorCodeVectors(),
+    "paywall-transcripts.json": await buildPaywallVectors(),
   }
   const out = {} as Record<VectorFile, string>
   for (const name of VECTOR_FILES) {

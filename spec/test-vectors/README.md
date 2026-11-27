@@ -23,6 +23,7 @@ The JSON files are generated: never edit them by hand.
 | `requirement-matching.json` | 17 | (accepted, required) pairs: match, or the mismatch code and field |
 | `client-transcripts.json` | 15 | request/response transcripts a client replays: payment, retries, refusals, spending policy |
 | `error-codes.json` | 31 codes | every stable error code, its group and a one-line meaning |
+| `paywall-transcripts.json` | 25 | the server SDK core against a scripted facilitator: charge creation, per-IP cap, verify → handler → settle, settle retries, locks, refusals |
 
 Every file is one JSON object:
 
@@ -144,13 +145,32 @@ The rules the transcripts encode:
 `webhook`, `client`) and meaning. `client` codes are raised by the client and never sent on the
 wire. Codes are never renamed; an SDK should treat an unknown `errorReason` as `payment_rejected`.
 
+### paywall-transcripts.json
+
+For server SDKs. Each case builds one paywall from `config` (facilitator URL, merchant token, a
+fixed `clock`, optional `ipRateLimit` and `publicOrigin`) and runs `steps` in order against a
+facilitator stub:
+
+- A `request` step hands the paywall `request` (method, URL, headers, `clientIp` for the per-IP
+  cap) and `route` (`amount` in centavos, optional `description`, `mimeType`, `resource`).
+- `facilitator` lists every request the paywall sends during the step, in order, with the answer to
+  serve. Compare method, URL, headers (lowercase names; ignore what your HTTP library adds on its
+  own, such as `host` and `content-length`) and the exact JSON body text. The `/settle`
+  Idempotency-Key is a random UUID, written as `<uuid>`; it must stay the same across the retries
+  of one settle. `{network: true}` stands for a transport error.
+- `outcome` is `{type: "response", response}` when the paywall answered by itself, or
+  `{type: "paid", chargeId, amount, handler, response?}` when it verified the payment: hand
+  `handler` (the route's output) to finalize and compare its result with `response`. `handler:
+  "throws"` means the route raised (release without settling); `"hold"` means finalize runs later in
+  a `finalize` step, which is how the in-process lock on a charge is tested.
+- Responses compare status, every header (lowercase names) and the exact body text.
+
 ## Not covered (on purpose)
 
 - **Facilitator HTTP API** (`/pix/charges`, `/verify`, `/settle`, `/supported`, webhooks): SDKs
   talk to the facilitator through the server SDK; vectors for it belong with an OpenAPI export.
-- **Server behaviour end to end** (charge creation, the in-process lock, settle retries with an
-  idempotency key, rate limits): only the paywall's `PAYMENT-SIGNATURE` error codes are covered,
-  through `validation.json`.
+- **Server behaviour against a real facilitator**: `paywall-transcripts.json` covers the paywall
+  core against a scripted facilitator; the facilitator's own decisions are not vectors.
 - **BR Code parsing** beyond the amount check in `client/br-code-amount-mismatch` (CRC, nested EMV
   templates, dynamic codes).
 - **Timeouts**: giving up on `settlement_pending` (`payment_timeout`) depends on the charge's
