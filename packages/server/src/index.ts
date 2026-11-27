@@ -6,6 +6,7 @@ import {
   defaultFetch,
   encodePaymentRequired,
   encodeSettlementResponse,
+  errorBody,
   type FetchLike,
   HEADER_PAYMENT_REQUIRED,
   HEADER_PAYMENT_RESPONSE,
@@ -275,20 +276,16 @@ export function createPaywall(config: PaywallConfig): Paywall {
   }
 
   function facilitatorError(chargeId: string): Response {
-    return jsonResponse(
-      502,
-      { error: "facilitator_error" },
-      {
-        [HEADER_PAYMENT_RESPONSE]: encodeSettlementResponse(
-          failureSettlement("facilitator_error", chargeId),
-        ),
-      },
-    )
+    return jsonResponse(502, errorBody("facilitator_error"), {
+      [HEADER_PAYMENT_RESPONSE]: encodeSettlementResponse(
+        failureSettlement("facilitator_error", chargeId),
+      ),
+    })
   }
 
   function unauthorized(path: string): Response {
     console.error(`p-x402: facilitator rejected the merchant token (401 on ${path})`)
-    return jsonResponse(500, { error: "unauthorized" })
+    return jsonResponse(500, errorBody("unauthorized"))
   }
 
   /** Shared answer handling for /verify and /settle. */
@@ -360,11 +357,9 @@ export function createPaywall(config: PaywallConfig): Paywall {
   }
 
   function badHeader(reason: Px402ErrorCode): Response {
-    return jsonResponse(
-      400,
-      { error: reason },
-      { [HEADER_PAYMENT_RESPONSE]: encodeSettlementResponse(failureSettlement(reason, "")) },
-    )
+    return jsonResponse(400, errorBody(reason), {
+      [HEADER_PAYMENT_RESPONSE]: encodeSettlementResponse(failureSettlement(reason, "")),
+    })
   }
 
   async function createCharge(
@@ -382,11 +377,9 @@ export function createPaywall(config: PaywallConfig): Paywall {
     }
     const cap = limiter.take(key)
     if (!cap.ok) {
-      return jsonResponse(
-        429,
-        { error: "rate_limited" },
-        { "retry-after": String(cap.retryAfterSeconds) },
-      )
+      return jsonResponse(429, errorBody("rate_limited"), {
+        "retry-after": String(cap.retryAfterSeconds),
+      })
     }
 
     const answer = await post("/pix/charges", {
@@ -398,15 +391,13 @@ export function createPaywall(config: PaywallConfig): Paywall {
     if (answer.status === 401) return unauthorized("/pix/charges")
     if (answer.status === 400) {
       console.error("p-x402: facilitator refused the charge request (400)")
-      return jsonResponse(500, { error: "invalid_request" })
+      return jsonResponse(500, errorBody("invalid_request"))
     }
     if (answer.status === 429) {
       const retryAfter = answer.headers.get("retry-after")
-      return jsonResponse(
-        429,
-        { error: "rate_limited" },
-        { "retry-after": retryAfter && /^\d+$/.test(retryAfter) ? retryAfter : "1" },
-      )
+      return jsonResponse(429, errorBody("rate_limited"), {
+        "retry-after": retryAfter && /^\d+$/.test(retryAfter) ? retryAfter : "1",
+      })
     }
     const parsed = CreateChargeResponseSchema.safeParse(answer.body)
     if (answer.status !== 200 || !parsed.success) return facilitatorError("")
@@ -434,7 +425,7 @@ export function createPaywall(config: PaywallConfig): Paywall {
     const amount = validateRoute(route)
     // HEAD/OPTIONS never create, verify or settle a charge (and never touch the IP cap).
     if (UNPAYABLE_METHODS.has(request.method.toUpperCase())) {
-      return { type: "response", response: jsonResponse(402, { error: "method_not_payable" }) }
+      return { type: "response", response: jsonResponse(402, errorBody("method_not_payable")) }
     }
     const resourceUrl = resourceUrlFor(request, route)
     const resource: ResourceInfo = {
