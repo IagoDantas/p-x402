@@ -228,9 +228,9 @@
     background: linear-gradient(180deg, rgba(255,255,255,.025), transparent);
   }
   .avatar {
-    width: 56px; height: 56px; border-radius: 50%; margin-bottom: 40px;
-    background: radial-gradient(circle at 30% 25%, #1f3a2c, #0b120e 70%); border: 1px solid rgba(50,213,131,.3);
-    display: grid; place-items: center; font: 500 15px var(--mono); color: var(--green); letter-spacing: .02em;
+    width: 160px; height: 160px; border-radius: 50%; margin-bottom: 28px;
+    background: radial-gradient(circle at 30% 25%, #1f3a2c, #0b120e 70%);
+    display: block; object-fit: cover;
   }
   .member h3 { margin: 0; font: 600 26px/1.1 var(--display); letter-spacing: -.03em; }
   @media (max-width: 860px) { .team { grid-template-columns: 1fr; } }
@@ -466,9 +466,9 @@ app.get(<span class="s">"/relatorio"</span>,
   <div class="wrap">
     <h2 class="rv d1" style="margin-bottom:48px">Quem está construindo</h2>
     <div class="team">
-      <div class="member rv"><div class="avatar" aria-hidden="true">ID</div><h3>Iago Dantas</h3></div>
-      <div class="member rv d1"><div class="avatar" aria-hidden="true">RM</div><h3>Rafael Marcondes</h3></div>
-      <div class="member rv d2"><div class="avatar" aria-hidden="true">HS</div><h3>Henrique Sanches</h3></div>
+      <div class="member rv"><img class="avatar" src="profile-pics/iago.jpeg" alt=""><h3>Iago Dantas</h3></div>
+      <div class="member rv d1"><img class="avatar" src="profile-pics/rafa.jpeg" alt=""><h3>Rafael Marcondes</h3></div>
+      <div class="member rv d2"><img class="avatar" src="profile-pics/henrique.jpg" alt=""><h3>Henrique Sanches</h3></div>
     </div>
   </div>
 </section>
