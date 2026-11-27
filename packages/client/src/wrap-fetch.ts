@@ -52,10 +52,16 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
   ): Promise<Response> {
     const details = { chargeId, paymentSignature }
     // The server sets expiresAt and Retry-After; never wait on them longer than maxWaitMs.
-    const until = Math.min(
-      Number.isNaN(deadline) ? Number.NEGATIVE_INFINITY : deadline,
-      now() + maxWaitMs,
-    )
+    const expiry = Number.isNaN(deadline) ? Number.NEGATIVE_INFINITY : deadline
+    const cap = now() + maxWaitMs
+    const until = Math.min(expiry, cap)
+    // What ends the wait: the charge's expiry, our own cap, or not knowing the expiry at all.
+    const timeoutReason =
+      expiry === Number.NEGATIVE_INFINITY
+        ? "unknown_expiry"
+        : expiry <= cap
+          ? "expired"
+          : "max_wait"
     let backoff = initialDelayMs
     for (;;) {
       // The signature is a bearer proof for a paid charge: never let a redirect carry it elsewhere.
@@ -77,7 +83,11 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
       const reason = header === null ? undefined : readErrorReason(header)
       if (reason === "settlement_pending") {
         if (now() > until) {
-          throw new Px402Error("payment_timeout", "charge expired before settlement", details)
+          const message =
+            timeoutReason === "expired"
+              ? "charge expired before settlement"
+              : "gave up waiting for settlement"
+          throw new Px402Error("payment_timeout", message, { ...details, reason: timeoutReason })
         }
         const wait = Math.max(retryAfterMs(response, now()), backoff)
         backoff = Math.min(backoff * factor, maxDelayMs)
