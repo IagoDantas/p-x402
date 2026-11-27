@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   decodePaymentPayload,
   encodeEmv,
+  encodePaymentPayload,
   encodeTlv,
   isPx402Error,
   type Px402Error,
@@ -572,6 +573,50 @@ describe("wrapFetch", () => {
     )
     expect(error2.code).toBe("charge_already_consumed")
     expect(charges).toHaveLength(0)
+  })
+
+  test("resume with a non-Pix PAYMENT-SIGNATURE sends it once and never pays", async () => {
+    const exact = encodePaymentPayload({
+      x402Version: 2,
+      accepted: {
+        scheme: "exact",
+        network: "eip155:8453",
+        asset: "USDC",
+        amount: "1000",
+        payTo: "0x0000000000000000000000000000000000000001",
+        maxTimeoutSeconds: 60,
+      },
+      payload: { signature: "0x" },
+    })
+    for (const signature of ["garbage", exact]) {
+      const pending = scriptedServer(() => refused("settlement_pending", "pix_char_mock_0001", "2"))
+      const { payer, charges } = countingPayer()
+      const clock = fakeClock()
+      const options = { payer, now: clock.now, sleep: clock.sleep }
+      const error = await caught(
+        wrapFetch(pending.fetch, options)(RESOURCE, {
+          headers: { "PAYMENT-SIGNATURE": signature },
+        }),
+      )
+      // No Pix expiry to wait for: one attempt, then payment_timeout.
+      expect(error.code).toBe("payment_timeout")
+      expect(error.details?.reason).toBe("unknown_expiry")
+      expect(error.details?.paymentSignature).toBe(signature)
+      expect(pending.seen.map((s) => s.signature)).toEqual([signature])
+      expect(clock.sleeps).toEqual([])
+      expect(charges).toHaveLength(0)
+
+      const reply = new Response("ok", { status: 200 })
+      const ok = scriptedServer(() => reply)
+      const response = await wrapFetch(ok.fetch, options)(RESOURCE, {
+        headers: { "PAYMENT-SIGNATURE": signature },
+      })
+      expect(response).toBe(reply)
+      expect(await response.text()).toBe("ok")
+      expect(ok.seen.map((s) => s.signature)).toEqual([signature])
+      expect(clock.sleeps).toEqual([])
+      expect(charges).toHaveLength(0)
+    }
   })
 
   test("backoff grows by factor and is capped at maxDelayMs", async () => {

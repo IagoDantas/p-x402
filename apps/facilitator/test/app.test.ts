@@ -1173,6 +1173,38 @@ for (const [storeName, makeStore] of backends) {
         expect((await f.store.get(id))?.paidAt).toBe(T0)
       })
 
+      test("store failure during a webhook with forgetWebhookEvent also failing → 503 webhook_retry", async () => {
+        const inner = makeStore()
+        let failGet = false
+        let forgets = 0
+        const store: ChargeStore = {
+          ...inner,
+          async get(id) {
+            if (failGet) {
+              failGet = false
+              throw new Error("db locked")
+            }
+            return inner.get(id)
+          },
+          async forgetWebhookEvent() {
+            forgets++
+            throw new Error("db gone")
+          },
+        }
+        const f = setup(() => store)
+        const req = await f.charge()
+        const id = req.extra.chargeId
+        await f.mock.simulatePayment(id)
+        failGet = true
+        const res = await f.fetch(
+          await f.mock.webhookRequest("paid", id, { envelopeId: "log_db_forget" }),
+        )
+        expect(res.status).toBe(503)
+        expect(await res.json()).toEqual({ error: "webhook_retry" })
+        expect(forgets).toBe(1)
+        expect((await f.store.get(id))?.paidAt).toBeNull()
+      })
+
       test("wrong or empty secret → 401", async () => {
         const f = setup(makeStore)
         const req = await f.charge()
@@ -1381,6 +1413,20 @@ for (const [storeName, makeStore] of backends) {
       const res = await h.post(`/dev/charges/${r3.extra.chargeId}/simulate-payment`, {}, null)
       expect(res.status).toBe(404)
       expect(mock.peek(r3.extra.chargeId)?.status).toBe("PENDING")
+    })
+
+    test("dev simulate drops the cached pending PSP answer", async () => {
+      const f = setup(makeStore, { devSimulate: true })
+      const req = await f.charge()
+      const before = await f.verify(f.body(req))
+      expect(before.json).toMatchObject({ isValid: false, invalidReason: "settlement_pending" })
+      expect(f.mock.calls.getCharge).toBe(1)
+      const res = await f.post(`/dev/charges/${req.extra.chargeId}/simulate-payment`, {}, null)
+      expect(res.status).toBe(200)
+      // Same instant: without the cache drop the pending answer would be reused.
+      const after = await f.verify(f.body(req))
+      expect(after.json.isValid).toBe(true)
+      expect(f.mock.calls.getCharge).toBe(2)
     })
 
     test("dev simulate: provider simulatePayment failure → 502 psp_error", async () => {

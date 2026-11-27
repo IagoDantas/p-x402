@@ -5,6 +5,7 @@ import {
   encodeJsonHeader,
   isPx402Error,
   PixPaymentRequirementsSchema,
+  Px402Error,
 } from "@p-x402/core"
 import { createPaywall, type PaywallConfig, type PaywallResult } from "../src/index"
 import {
@@ -175,15 +176,44 @@ describe("first request", () => {
     )
     expect(chargeUrl(stub.calls[0]?.body)).toBe("https://api.shop.test/relatorio?q=2")
   })
+})
 
-  test("publicOrigin with a path is rejected at creation", () => {
-    expect(() =>
-      createPaywall({
-        facilitatorUrl: FACILITATOR,
-        token: TOKEN,
-        publicOrigin: "https://a.test/x",
-      }),
-    ).toThrow()
+describe("createPaywall config", () => {
+  function creationError(config: Partial<PaywallConfig>): unknown {
+    try {
+      createPaywall({ facilitatorUrl: FACILITATOR, token: TOKEN, ...config })
+    } catch (error) {
+      return error
+    }
+    return undefined
+  }
+
+  test("facilitatorUrl that is not a URL → invalid_request", () => {
+    const err = creationError({ facilitatorUrl: "nope" })
+    expect(err).toBeInstanceOf(Px402Error)
+    expect((err as Px402Error).code).toBe("invalid_request")
+  })
+
+  test("trailing slashes on facilitatorUrl do not double the slash in /verify", async () => {
+    for (const facilitatorUrl of [`${FACILITATOR}/`, `${FACILITATOR}//`]) {
+      const { stub, paywall } = setup({ facilitatorUrl })
+      paid(await paywall.handle(paidRequest(), route))
+      expect(stub.calls.map((call) => call.path)).toEqual(["/verify"])
+    }
+  })
+
+  test.each([
+    "ftp://a.test",
+    "https://a.test/",
+    "https://a.test?x=1",
+    "https://a.test#h",
+    "https://u:p@a.test",
+    "not a url",
+    "https://a.test/x",
+  ])("publicOrigin %p is rejected at creation with invalid_request", (publicOrigin) => {
+    const err = creationError({ publicOrigin })
+    expect(err).toBeInstanceOf(Px402Error)
+    expect((err as Px402Error).code).toBe("invalid_request")
   })
 })
 
@@ -590,6 +620,63 @@ describe("paid retry", () => {
   })
 })
 
+describe("unusable facilitator answers", () => {
+  test("/verify: non-JSON, {}, 404 or 429 → 502 facilitator_error, lock released", async () => {
+    const { stub, paywall } = setup()
+    const replies = [
+      new Response("not json", { status: 200 }),
+      stub.json({}),
+      stub.json({ isValid: true }, 404),
+      stub.json({ isValid: true }, 429),
+    ]
+    for (const reply of replies) {
+      stub.reply("/verify", reply)
+      const res = response(await paywall.handle(paidRequest(), route))
+      expect(res.status).toBe(502)
+      expect(await res.json()).toEqual({ error: "facilitator_error" })
+      expect(decodeSettlementResponse(res.headers.get("PAYMENT-RESPONSE") ?? "")).toEqual({
+        success: false,
+        errorReason: "facilitator_error",
+        transaction: "pix_char_mock_0001",
+        network: "pix:br",
+      })
+    }
+    // Every attempt reached /verify: no lock was left behind.
+    expect(stub.callsTo("/verify")).toHaveLength(replies.length)
+  })
+
+  test("/settle: non-JSON, {}, 404 or 429 → 502, handler body dropped, lock released", async () => {
+    const { stub, paywall } = setup()
+    const success = { success: true, transaction: "pix_char_mock_0001", network: "pix:br" }
+    const replies = [
+      new Response("not json", { status: 200 }),
+      stub.json({}),
+      stub.json(success, 404),
+      stub.json(success, 429),
+    ]
+    for (const reply of replies) {
+      stub.reply("/settle", reply)
+      const before = stub.callsTo("/settle").length
+      const result = paid(await paywall.handle(paidRequest(), route))
+      const out = await result.finalize(new Response("secret report", { status: 200 }))
+      expect(out.status).toBe(502)
+      expect(await out.text()).toBe(JSON.stringify({ error: "facilitator_error" }))
+      expect(decodeSettlementResponse(out.headers.get("PAYMENT-RESPONSE") ?? "")).toEqual({
+        success: false,
+        errorReason: "facilitator_error",
+        transaction: "pix_char_mock_0001",
+        network: "pix:br",
+      })
+      // Not a transport error or 5xx: no retry.
+      expect(stub.callsTo("/settle").length - before).toBe(1)
+    }
+    // The lock was released after each failed settle: a later paid request verifies again.
+    stub.reply("/settle", undefined)
+    paid(await paywall.handle(paidRequest(), route))
+    expect(stub.callsTo("/verify")).toHaveLength(replies.length + 1)
+  })
+})
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 describe("maxTimeoutSeconds", () => {
@@ -865,6 +952,45 @@ describe("chargeId lock", () => {
     blockedWithoutVerify(await paywall.handle(paidRequest(), route))
     settleGate.open()
     expect((await finalizing).status).toBe(200)
+  })
+
+  test("at 1024 held locks the sweep drops stale ones and keeps fresh ones", async () => {
+    // Stale after 60 s + 1 s x 4 = 64 s. Locks are held by verified requests not yet finalized.
+    const { clock, stub, paywall } = setup({ facilitatorTimeoutMs: 1_000 })
+    const chargeId = (i: number) => `pix_char_sweep_${String(i).padStart(4, "0")}`
+    const request = (i: number) => paidRequest(pixRequirements({ chargeId: chargeId(i) }))
+    const holders: Extract<PaywallResult, { type: "paid" }>[] = []
+    for (let i = 0; i < 512; i++) holders.push(paid(await paywall.handle(request(i), route)))
+    clock.advance(32_000)
+    for (let i = 512; i < 1024; i++) holders.push(paid(await paywall.handle(request(i), route)))
+    // The first half is now 64 s old (stale), the second half 32 s (fresh).
+    clock.advance(32_000)
+    // 1024 locks held: taking one more sweeps the stale ones.
+    holders.push(paid(await paywall.handle(request(1024), route)))
+    expect(stub.callsTo("/verify")).toHaveLength(1025)
+
+    // A swept lock is gone: its old holder's finalize cannot revive it (touch only renews a lock
+    // still in the map), so the charge can be taken while that settle is in flight.
+    const settleGate = gate()
+    stub.reply("/settle", () =>
+      settleGate.opened.then(() =>
+        stub.json({ success: true, transaction: chargeId(0), network: "pix:br", amount: "500" }),
+      ),
+    )
+    const finalizing = holders[0]?.finalize(new Response("report"))
+    paid(await paywall.handle(request(0), route))
+    // Another stale chargeId is taken again too.
+    paid(await paywall.handle(request(1), route))
+    expect(stub.callsTo("/verify")).toHaveLength(1027)
+
+    // Fresh locks survive the sweep.
+    blockedWithoutVerify(await paywall.handle(request(512), route))
+    blockedWithoutVerify(await paywall.handle(request(1023), route))
+    blockedWithoutVerify(await paywall.handle(request(1024), route))
+    expect(stub.callsTo("/verify")).toHaveLength(1027)
+
+    settleGate.open()
+    expect((await finalizing)?.status).toBe(200)
   })
 })
 
