@@ -5,7 +5,13 @@ import { createPaywall, type PaywallConfig, type PaywallRoute } from "./index"
 export type Px402Variables = { px402: { chargeId: string; amount: string } }
 
 export interface HonoPaywallConfig extends PaywallConfig {
-  /** Overrides the default client IP lookup (Bun.serve `requestIP`). */
+  /**
+   * Overrides the default client IP lookup, which is the TCP peer from Bun.serve `requestIP`.
+   * Set it when the default cannot see the buyer: outside Bun (it returns undefined there), or
+   * behind a reverse proxy, where every buyer would share the proxy's rate-limit bucket. Read only
+   * a header your own proxy sets (e.g. `cf-connecting-ip`, or the right-most X-Forwarded-For hop
+   * your proxy appended); a header the client controls lets it dodge the per-IP cap.
+   */
   getClientIp?: (c: Context) => string | undefined
 }
 

@@ -376,7 +376,9 @@ export function createPaywall(config: PaywallConfig): Paywall {
     const key = clientIpKey(clientIp)
     if (key === UNKNOWN_IP_KEY && !warnedUnknownIp) {
       warnedUnknownIp = true
-      console.warn("p-x402: client IP unknown; all such requests share one rate-limit bucket")
+      console.warn(
+        "p-x402: client IP unknown; all such requests share one rate-limit bucket (pass the client IP, or getClientIp in the Hono middleware)",
+      )
     }
     const cap = limiter.take(key)
     if (!cap.ok) {

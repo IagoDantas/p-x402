@@ -374,7 +374,8 @@ SDKs em outras linguagens, adapters para outros frameworks, geração de OpenAPI
 - A trava por cobrança e os limites de taxa ficam em memória, por processo. Com mais de uma instância do vendedor, é preciso roteamento fixo por cobrança.
 - Uma resposta em streaming que falhe no meio já foi liquidada.
 - O túnel rápido do cloudflared (`trycloudflare.com`) muda de URL a cada reinício. O webhook cadastrado para ele para de funcionar quando o túnel cai. Para uma URL fixa, use um túnel nomeado na conta Cloudflare do time ou publique o facilitator.
-- Só foi testado no Bun. Node, Deno e Workers devem funcionar para as bibliotecas, mas ninguém rodou.
+- Só foi testado no Bun. Node, Deno e Workers devem funcionar para as bibliotecas, mas ninguém rodou. Fora do Bun o middleware Hono não descobre o IP do comprador sozinho: passe `getClientIp`.
+- Atrás de um proxy reverso (Cloudflare, nginx), o IP que o Bun vê é o do proxy, e todos os compradores dividem o mesmo limite de 10 por minuto. Passe `getClientIp` lendo um header que o seu proxy define (por exemplo `cf-connecting-ip`). Nunca leia um header que o cliente pode forjar.
 
 ---
 
