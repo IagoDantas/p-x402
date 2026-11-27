@@ -662,7 +662,7 @@ describe("wrapFetch", () => {
       )
       // No Pix expiry to wait for: one attempt, then payment_timeout.
       expect(error.code).toBe("payment_timeout")
-      expect(error.details?.reason).toBe("unknown_expiry")
+      expect(error.details?.reason).toBe("single_attempt")
       expect(error.details?.paymentSignature).toBe(signature)
       expect(pending.seen.map((s) => s.signature)).toEqual([signature])
       expect(clock.sleeps).toEqual([])

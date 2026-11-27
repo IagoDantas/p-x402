@@ -59,7 +59,7 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
   ): Promise<Response> {
     const details = { chargeId, paymentSignature }
     const until = isPix ? now() + maxWaitMs : Number.NEGATIVE_INFINITY
-    const timeoutReason = isPix ? "max_wait" : "unknown_expiry"
+    const timeoutReason = isPix ? "max_wait" : "single_attempt"
     let backoff = initialDelayMs
     for (;;) {
       // The signature is a bearer proof for a paid charge: never let a redirect carry it elsewhere.
