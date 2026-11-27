@@ -18,7 +18,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+fastapi = ["starlette>=0.27"]
+dev = ["pytest>=7", "fastapi>=0.100", "uvicorn>=0.23"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -35,3 +36,5 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B"]
+# B008: FastAPI's Depends(...) in argument defaults is the framework's idiom.
+ignore = ["B008"]
