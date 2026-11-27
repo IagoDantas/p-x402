@@ -590,6 +590,35 @@ for (const [storeName, makeStore] of backends) {
     })
 
     describe("settle idempotency", () => {
+      test("a store failure inside /settle → 500 unexpected_error, then a same-key retry settles", async () => {
+        const inner = makeStore()
+        let failConsume = true
+        const store: ChargeStore = {
+          ...inner,
+          get: (id) => inner.get(id),
+          async consume(id, at, key) {
+            if (failConsume) {
+              failConsume = false
+              throw new Error("db locked")
+            }
+            return inner.consume(id, at, key)
+          },
+        }
+        const f = setup(() => store)
+        const req = await f.charge()
+        await f.mock.simulatePayment(req.extra.chargeId)
+        const failed = await f.post("/settle", f.body(req), "tok-loja1", {
+          "idempotency-key": "k1",
+        })
+        expect(failed.status).toBe(500)
+        // Nothing internal is echoed back.
+        expect(await failed.json()).toEqual({ error: "unexpected_error" })
+        expect((await f.store.get(req.extra.chargeId))?.consumedAt).toBeNull()
+        const retry = await f.settle(f.body(req), "tok-loja1", "k1")
+        expect(retry.json.success).toBe(true)
+        expect((await f.store.get(req.extra.chargeId))?.consumedKey).toBe("k1")
+      })
+
       test("same key replays the same success; other key or no key → consumed", async () => {
         const f = setup(makeStore)
         const req = await f.charge()

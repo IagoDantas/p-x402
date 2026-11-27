@@ -499,6 +499,19 @@ describe("wrapFetch", () => {
     )
     const bare = await caught(wrapFetch(noHeader.fetch, { payer })(RESOURCE))
     expect(bare.code).toBe("payment_rejected")
+
+    // An undecodable PAYMENT-RESPONSE after paying still keeps what is needed to resume.
+    for (const header of ["%%%", btoa(JSON.stringify({ foo: 1 }))]) {
+      const garbled = scriptedServer((_a, _r, seen) =>
+        seen.signature === null
+          ? challenge(paymentRequired([pixRequirements()]))
+          : new Response("", { status: 402, headers: { "PAYMENT-RESPONSE": header } }),
+      )
+      const error = await caught(wrapFetch(garbled.fetch, { payer })(RESOURCE))
+      expect(error.code).toBe("payment_rejected")
+      expect(error.details?.chargeId).toBe("pix_char_mock_0001")
+      expect(typeof error.details?.paymentSignature).toBe("string")
+    }
   })
 
   test("POST body is resent intact on every attempt", async () => {
