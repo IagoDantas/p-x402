@@ -17,5 +17,11 @@ describe("clientIpKey", () => {
 
   test("IPv4-mapped IPv6 maps to IPv4", () => {
     expect(clientIpKey("::ffff:1.2.3.4")).toBe("1.2.3.4")
+    expect(clientIpKey("::ffff:102:304")).toBe("1.2.3.4")
+    expect(clientIpKey("0:0:0:0:0:ffff:c0a8:0101")).toBe("192.168.1.1")
+  })
+
+  test("an unparseable IPv6 string is its own key", () => {
+    expect(clientIpKey("1::2::3")).toBe("1::2::3")
   })
 })

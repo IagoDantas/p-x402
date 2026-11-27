@@ -34,5 +34,20 @@ export function clientIpKey(ip: string | undefined): string {
   if (mapped?.[1]) return mapped[1]
   const groups = expandIpv6(bare)
   if (!groups) return bare
+  // IPv4-mapped in hex form (::ffff:102:304) is the same client as ::ffff:1.2.3.4.
+  const [hi, lo] = [groups[6], groups[7]]
+  if (
+    groups.length === 8 &&
+    groups.slice(0, 5).every((g) => g === "0") &&
+    groups[5] === "ffff" &&
+    hi !== undefined &&
+    lo !== undefined &&
+    HEXTET.test(hi) &&
+    HEXTET.test(lo)
+  ) {
+    const a = Number.parseInt(hi, 16)
+    const b = Number.parseInt(lo, 16)
+    return `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`
+  }
   return `${groups.slice(0, 4).join(":")}::/64`
 }
