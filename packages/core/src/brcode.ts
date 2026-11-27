@@ -13,7 +13,7 @@ export interface BrCodeInfo {
   amount?: string
   /** CRC16 in tag 63 matches the payload. */
   crcValid: boolean
-  /** Tag 26 carries a location URL (dynamic COB code); its amount lives behind that URL. */
+  /** The Pix template carries a location URL (dynamic COB code); its amount lives behind that URL. */
   hasLocation: boolean
   fields: EmvField[]
 }
@@ -72,23 +72,43 @@ export function brlToCentavos(value: string): string | undefined {
   return total.toString()
 }
 
+/** BR Codes are printable ASCII; outside it, field lengths and the CRC depend on the decoder's encoding. */
+const PRINTABLE_ASCII = /^[\x20-\x7E]+$/
+/** GUI (sub-tag 00) of the Pix merchant account template. */
+const PIX_GUI = "br.gov.bcb.pix"
+
+function hasDuplicateIds(fields: EmvField[]): boolean {
+  return new Set(fields.map((f) => f.id)).size !== fields.length
+}
+
 /**
- * Returns null when the text is not a well-formed EMV payload, including when a top-level tag
- * appears twice: decoders disagree on which copy wins, so an amount check on one copy proves nothing.
+ * Returns null when the text is not a well-formed Pix BR Code. Ambiguous codes are refused, since
+ * decoders disagree on how to read them and an amount check on one reading proves nothing: a
+ * non-ASCII character, a repeated tag, a merchant account template (tags 26-51) whose nested
+ * fields do not parse, or anything other than exactly one Pix template.
  */
 export function parseBrCode(text: string): BrCodeInfo | null {
+  if (!PRINTABLE_ASCII.test(text)) return null
   const fields = parseEmv(text)
-  if (!fields || fields.length === 0) return null
-  if (new Set(fields.map((f) => f.id)).size !== fields.length) return null
+  if (!fields || fields.length === 0 || hasDuplicateIds(fields)) return null
+  let pix: EmvField[] | undefined
+  for (const field of fields) {
+    const id = Number(field.id)
+    if (id < 26 || id > 51) continue
+    const sub = parseEmv(field.value)
+    if (!sub || hasDuplicateIds(sub)) return null
+    if (sub.find((f) => f.id === "00")?.value.toLowerCase() !== PIX_GUI) continue
+    if (pix) return null
+    pix = sub
+  }
+  if (!pix) return null
   const last = fields[fields.length - 1]
   const crcValid =
     last !== undefined &&
     last.id === "63" &&
     last.value.length === 4 &&
     crc16(text.slice(0, -4)) === last.value.toUpperCase()
-  const merchantAccount = fields.find((f) => f.id === "26")
-  const sub = merchantAccount ? (parseEmv(merchantAccount.value) ?? []) : []
-  const hasLocation = sub.some((f) => f.id === "25")
+  const hasLocation = pix.some((f) => f.id === "25")
   const rawAmount = fields.find((f) => f.id === "54")?.value
   const amount = rawAmount === undefined ? undefined : brlToCentavos(rawAmount)
   const info: BrCodeInfo = { crcValid, hasLocation, fields }

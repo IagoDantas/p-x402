@@ -89,7 +89,7 @@ Proteções extras, que vieram da revisão adversária:
   - não espera um `settlement_pending` por mais de 10 minutos (`retry.maxWaitMs`), mesmo que o vendedor mande um `expiresAt` ou `Retry-After` maior;
   - não paga se a URL do recurso é de outro domínio;
   - não paga se o valor dentro do BR Code é diferente do anunciado;
-  - não paga um BR Code com tag repetida (cada banco leria um valor diferente);
+  - não paga um BR Code ambíguo, que cada banco poderia ler de um jeito: com tag repetida, caractere fora do ASCII, template de conta que não se lê direito, ou sem exatamente um template Pix;
   - não paga um BR Code dinâmico (com URL de location), porque o valor de verdade está atrás da URL, a não ser que o pagador declare `checksDynamicAmount: true` e confira esse valor ele mesmo.
 - **Dados do pagador** (nome, CPF) que chegam no webhook nunca são gravados nem repassados (LGPD).
 
