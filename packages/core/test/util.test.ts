@@ -16,6 +16,24 @@ describe("createRateLimiter", () => {
   })
 })
 
+describe("createRateLimiter sweep", () => {
+  test("the periodic sweep keeps live keys and drops only fully expired ones", () => {
+    let t = 1_000_000
+    const limiter = createRateLimiter({ limit: 2, windowMs: 60_000, now: () => t })
+    expect(limiter.take("a")).toEqual({ ok: true })
+    expect(limiter.take("a")).toEqual({ ok: true })
+    // The 1000th call (the sweep) is on another key while "a" is still inside its window: a sweep
+    // that dropped live keys would forget "a" and let the next take through.
+    for (let i = 0; i < 998; i++) limiter.take(`k${i}`)
+    t += 30_000
+    expect(limiter.take("a")).toEqual({ ok: false, retryAfterSeconds: 30 })
+    // Past the window: the next sweep drops the old keys and "a" is allowed again.
+    t += 30_001
+    for (let i = 0; i < 999; i++) limiter.take(`m${i}`)
+    expect(limiter.take("a")).toEqual({ ok: true })
+  })
+})
+
 describe("timingSafeEqual", () => {
   test("compares by value", async () => {
     expect(await timingSafeEqual("secret", "secret")).toBe(true)

@@ -90,7 +90,8 @@ export function bunSqliteStore(path: string): ChargeStore {
   const disputed = setOnce("disputed_at")
   const refunded = setOnce("refunded_at")
   const consumed = db.query(
-    "UPDATE charges SET consumed_at = $at, consumed_key = $key WHERE id = $id AND consumed_at IS NULL",
+    `UPDATE charges SET consumed_at = $at, consumed_key = $key
+     WHERE id = $id AND consumed_at IS NULL AND disputed_at IS NULL AND refunded_at IS NULL`,
   )
   const event = db.query("INSERT OR IGNORE INTO webhook_events (id, received_at) VALUES ($id, $at)")
   const pruneEvents = db.query("DELETE FROM webhook_events WHERE received_at < $cutoff")

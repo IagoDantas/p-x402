@@ -1,3 +1,4 @@
+import type { FetchLike } from "@p-x402/core"
 import { createAbacatePayProvider, createMockPixProvider, type PixProvider } from "@p-x402/psp"
 import { createFacilitator } from "./app"
 import type { ChargeStore } from "./store"
@@ -25,7 +26,7 @@ function main() {
   }
 
   let provider: PixProvider
-  let onReady: ((fetch: (request: Request) => Promise<Response>) => void) | undefined
+  let onReady: ((fetch: FetchLike) => void) | undefined
   if (providerName === "abacatepay") {
     const webhookSecret = Bun.env.ABACATEPAY_WEBHOOK_SECRET?.trim()
     if (!webhookSecret) {

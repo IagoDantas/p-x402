@@ -168,6 +168,19 @@ describe("AbacatePay provider", () => {
     expect(state).toEqual({ id, status: "PAID" })
   })
 
+  test("getCharge keeps the status when expiresAt is unusable, and passes a good one on", async () => {
+    for (const expiresAt of ["", "soon", 42, null]) {
+      const s = stub(() => json({ data: { id: "pix_char_1", status: "PAID", expiresAt } }))
+      expect(await provider(s.fetch).getCharge("pix_char_1")).toEqual({
+        id: "pix_char_1",
+        status: "PAID",
+      })
+    }
+    const good = "2026-11-25T15:05:00.000Z"
+    const s = stub(() => json({ data: { id: "pix_char_1", status: "PAID", expiresAt: good } }))
+    expect((await provider(s.fetch).getCharge("pix_char_1")).expiresAt).toBe(good)
+  })
+
   test("getCharge refuses an answer about another charge", async () => {
     const s = stub(() => json({ data: { id: "pix_char_other", status: "PAID" } }))
     await expectCode(provider(s.fetch).getCharge("pix_char_1"), "psp_error")
@@ -341,6 +354,40 @@ describe("AbacatePay provider", () => {
       return provider(stub(() => json({})).fetch, { webhookSecret: SECRET })
     }
 
+    test.each(["constructor", "toString", "__proto__"])(
+      "an event named %s is kind other, not a prototype member",
+      async (event) => {
+        const parsed = await withSecret().parseWebhook?.(await hook({ id: "log_9", event }))
+        expect(parsed).toEqual({ id: "log_9", kind: "other", event })
+      },
+    )
+
+    test("the size limit counts UTF-8 bytes, not characters, when no content-length is sent", async () => {
+      // 40 000 "é" = 40 000 characters but 80 000 bytes.
+      const raw = JSON.stringify({ ...envelope("transparent.completed"), pad: "é".repeat(40_000) })
+      const bytes = new TextEncoder().encode(raw)
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes)
+          controller.close()
+        },
+      })
+      const request = new Request("http://facilitator.local/webhooks/pix", {
+        method: "POST",
+        headers: {
+          "X-Webhook-Secret": SECRET,
+          "X-Webhook-Signature": await signAbacatePayWebhook(raw),
+        },
+        body,
+      })
+      expect(request.headers.get("content-length")).toBeNull()
+      const error = await withSecret()
+        .parseWebhook?.(request)
+        .catch((e: unknown) => e)
+      expect(isPx402Error(error) && error.code).toBe("invalid_webhook_payload")
+      expect(String((error as Error).message)).toContain("too large")
+    })
+
     test("no parseWebhook without a secret", () => {
       const f = stub(() => json({})).fetch
       for (const webhookSecret of [undefined, "", "   "]) {
@@ -371,6 +418,43 @@ describe("AbacatePay provider", () => {
         const parsed = await p.parseWebhook?.(await hook(envelope(event)))
         expect(parsed).toEqual({ id: "log_123", kind, event, chargeId: "pix_char_abc123" })
         expect(JSON.stringify(parsed)).not.toContain("Fulano")
+      }
+    })
+
+    test("charge events signed without data.transparent.id are rejected", async () => {
+      const parse = withSecret().parseWebhook
+      if (!parse) throw new Error("parseWebhook missing")
+      for (const event of [
+        "transparent.completed",
+        "transparent.disputed",
+        "transparent.refunded",
+      ]) {
+        const body = { ...envelope(event), data: {} }
+        await expectCode(parse(await hook(body)), "invalid_webhook_payload")
+      }
+    })
+
+    test("an other event without data has no chargeId", async () => {
+      const { data: _data, ...body } = envelope("billing.paid")
+      const event = await withSecret().parseWebhook?.(await hook(body))
+      expect(event).toEqual({ id: "log_123", kind: "other", event: "billing.paid" })
+      expect(event && "chargeId" in event).toBe(false)
+    })
+
+    test("the event carries only id, kind, event and chargeId, never customer or payer data", async () => {
+      const p = withSecret()
+      for (const name of [
+        "transparent.completed",
+        "transparent.disputed",
+        "transparent.refunded",
+        "billing.paid",
+      ]) {
+        const event = await p.parseWebhook?.(await hook(envelope(name)))
+        expect(Object.keys(event ?? {}).sort()).toEqual(["chargeId", "event", "id", "kind"])
+        const text = JSON.stringify(event)
+        for (const leak of ["customer", "payerInformation", "taxId", "Fulano"]) {
+          expect(text).not.toContain(leak)
+        }
       }
     })
 

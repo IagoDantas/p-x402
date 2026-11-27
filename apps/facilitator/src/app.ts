@@ -2,6 +2,7 @@ import {
   CHARGE_TTL_SECONDS,
   CreateChargeRequestSchema,
   createRateLimiter,
+  errorBody,
   isPx402Error,
   PAID_GRACE_SECONDS,
   PIX_ASSET,
@@ -10,6 +11,7 @@ import {
   PIX_PAYMENT_FLOW,
   PIX_SCHEME,
   PixPaymentRequirementsSchema,
+  Px402Error,
   type Px402ErrorCode,
   type SettlementResponse,
   type SupportedResponse,
@@ -17,7 +19,7 @@ import {
   type VerifyResponse,
   X402_VERSION,
 } from "@p-x402/core"
-import type { PixChargeState, PixProvider } from "@p-x402/psp"
+import type { PixCharge, PixChargeState, PixProvider, PixWebhookEvent } from "@p-x402/psp"
 import { type Context, Hono } from "hono"
 import { bodyLimit } from "hono/body-limit"
 import { type CheckContext, type FacilitatorMerchant, runChecks } from "./checks"
@@ -28,6 +30,11 @@ export type { ChargeRecord, ChargeStore } from "./store"
 
 /** JSON bodies above this size are refused with 413. */
 export const MAX_BODY_BYTES = 64 * 1024
+const DEFAULT_MERCHANT_RATE_LIMIT = { limit: 60, windowMs: 60_000 }
+const DEFAULT_MAX_AMOUNT = 100_000
+const DEFAULT_PSP_CACHE_MS = 1000
+/** The PSP answer cache is cleared outright when it grows past this many charges. */
+const PSP_CACHE_MAX_ENTRIES = 10_000
 
 export interface FacilitatorOptions {
   provider: PixProvider
@@ -53,15 +60,19 @@ const BEARER = /^Bearer[ \t]+(\S+)[ \t]*$/i
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{1,128}$/
 
 function validateMerchants(merchants: FacilitatorMerchant[]) {
-  if (merchants.length === 0) throw new Error("facilitator: at least one merchant is required")
+  if (merchants.length === 0)
+    throw new Px402Error("invalid_request", "facilitator: at least one merchant is required")
   const ids = new Set<string>()
   const tokens = new Set<string>()
   for (const m of merchants) {
     if (!m.id || !m.token || !m.payTo) {
-      throw new Error("facilitator: merchant id, token and payTo must be non-empty")
+      throw new Px402Error(
+        "invalid_request",
+        "facilitator: merchant id, token and payTo must be non-empty",
+      )
     }
     if (ids.has(m.id) || tokens.has(m.token)) {
-      throw new Error("facilitator: merchant ids and tokens must be unique")
+      throw new Px402Error("invalid_request", "facilitator: merchant ids and tokens must be unique")
     }
     ids.add(m.id)
     tokens.add(m.token)
@@ -75,10 +86,10 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
   const now = options.now ?? Date.now
   const chargeTtl = Math.max(options.chargeTtlSeconds ?? CHARGE_TTL_SECONDS, provider.minExpiresIn)
   const paidGraceMs = (options.paidGraceSeconds ?? PAID_GRACE_SECONDS) * 1000
-  const maxAmount = options.maxAmount ?? 100_000
-  const pspCacheMs = options.pspCacheMs ?? 1000
+  const maxAmount = options.maxAmount ?? DEFAULT_MAX_AMOUNT
+  const pspCacheMs = options.pspCacheMs ?? DEFAULT_PSP_CACHE_MS
   const limiter = createRateLimiter({
-    ...(options.merchantRateLimit ?? { limit: 60, windowMs: 60_000 }),
+    ...(options.merchantRateLimit ?? DEFAULT_MERCHANT_RATE_LIMIT),
     now,
   })
 
@@ -99,7 +110,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
         // A call detached by forget() must not cache its (possibly stale) answer.
         if (inflight.get(id) !== call) return state
         if (state.status !== "PAID" && pspCacheMs > 0) {
-          if (cache.size > 10_000) cache.clear()
+          if (cache.size > PSP_CACHE_MAX_ENTRIES) cache.clear()
           cache.set(id, { state, at: now() })
         } else {
           cache.delete(id)
@@ -153,9 +164,9 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
 
   const limit = bodyLimit({
     maxSize: MAX_BODY_BYTES,
-    onError: (c) => c.json({ error: "invalid_request", message: "body too large" }, 413),
+    onError: (c) => c.json(errorBody("invalid_request", "body too large"), 413),
   })
-  const unauthorized = (c: Context) => c.json({ error: "unauthorized" }, 401)
+  const unauthorized = (c: Context) => c.json(errorBody("unauthorized"), 401)
 
   function checkContext(merchant: FacilitatorMerchant, useCache: boolean): CheckContext {
     return {
@@ -173,7 +184,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
 
   app.onError((error, c) => {
     console.error("facilitator: unexpected error", error)
-    return c.json({ error: "unexpected_error" }, 500)
+    return c.json(errorBody("unexpected_error"), 500)
   })
 
   app.get("/supported", (c) => {
@@ -199,7 +210,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
   app.post("/pix/charges", limit, async (c) => {
     const merchant = await authenticate(c)
     if (!merchant) return unauthorized(c)
-    const invalid = (message: string) => c.json({ error: "invalid_request", message }, 400)
+    const invalid = (message: string) => c.json(errorBody("invalid_request", message), 400)
 
     // Validate before touching the cap or the PSP.
     const json = await readJson(c)
@@ -215,11 +226,11 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
     const take = limiter.take(merchant.id)
     if (!take.ok) {
       c.header("Retry-After", String(take.retryAfterSeconds))
-      return c.json({ error: "rate_limited" }, 429)
+      return c.json(errorBody("rate_limited"), 429)
     }
 
     const description = request.description ?? request.resource.description
-    let charge: Awaited<ReturnType<PixProvider["createCharge"]>>
+    let charge: PixCharge
     try {
       charge = await provider.createCharge({
         amount,
@@ -230,7 +241,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       })
     } catch (error) {
       console.error("facilitator: createCharge failed", isPx402Error(error) ? error.code : error)
-      return c.json({ error: "psp_error" }, 502)
+      return c.json(errorBody("psp_error"), 502)
     }
 
     const built = PixPaymentRequirementsSchema.safeParse({
@@ -253,7 +264,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
     })
     if (!built.success || charge.amount !== amount) {
       console.error("facilitator: PSP returned an unusable charge", charge.id)
-      return c.json({ error: "psp_error" }, 502)
+      return c.json(errorBody("psp_error"), 502)
     }
 
     const record: ChargeRecord = {
@@ -277,9 +288,10 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
     try {
       await store.insert(record)
     } catch (error) {
-      // The PSP charge exists but we cannot track it; nobody will be asked to pay it.
+      // Our own fault, not the PSP's: the PSP charge exists but we cannot track it, so nobody
+      // will be asked to pay it.
       console.error("facilitator: storing charge failed", charge.id, error)
-      return c.json({ error: "psp_error" }, 502)
+      return c.json(errorBody("unexpected_error"), 500)
     }
     return c.json({ paymentRequirements: built.data })
   })
@@ -348,9 +360,16 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       return failure(result.reason, result.chargeId, result.status)
     }
     if (!(await store.consume(result.chargeId, now(), key))) {
-      // Lost the race; it may have been to an earlier attempt with this same key.
+      // Lost the race (maybe to an earlier attempt with this same key), or a webhook recorded a
+      // dispute or refund while we were asking the PSP.
       const current = await store.get(result.chargeId)
       if (isReplay(current)) return success(result.chargeId, result.record.amount)
+      if (current?.consumedAt == null && current?.refundedAt != null) {
+        return failure("charge_refunded", result.chargeId)
+      }
+      if (current?.consumedAt == null && current?.disputedAt != null) {
+        return failure("charge_disputed", result.chargeId)
+      }
       return failure("charge_already_consumed", result.chargeId)
     }
     return success(result.chargeId, result.record.amount)
@@ -358,14 +377,14 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
 
   app.post("/webhooks/pix", limit, async (c) => {
     if (!provider.parseWebhook) return c.notFound()
-    let event: Awaited<ReturnType<NonNullable<PixProvider["parseWebhook"]>>>
+    let event: PixWebhookEvent
     try {
       event = await provider.parseWebhook(c.req.raw)
     } catch (error) {
       if (isPx402Error(error) && error.code === "invalid_webhook_secret") {
-        return c.json({ error: "invalid_webhook_secret" }, 401)
+        return c.json(errorBody("invalid_webhook_secret"), 401)
       }
-      return c.json({ error: "invalid_webhook_payload" }, 400)
+      return c.json(errorBody("invalid_webhook_payload"), 400)
     }
     if (!(await store.recordWebhookEvent(event.id, now()))) {
       return c.json({ ok: true, duplicate: true })
@@ -392,7 +411,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       } catch (forgetError) {
         console.error("facilitator: forgetWebhookEvent failed", event.id, forgetError)
       }
-      return c.json({ error: "webhook_retry" }, 503)
+      return c.json(errorBody("webhook_retry"), 503)
     }
   })
 
@@ -405,7 +424,7 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       await provider.simulatePayment(id)
     } catch (error) {
       console.error("facilitator: simulatePayment failed", isPx402Error(error) ? error.code : error)
-      return c.json({ error: "psp_error" }, 502)
+      return c.json(errorBody("psp_error"), 502)
     }
     forget(id)
     return c.json({ ok: true, chargeId: id })

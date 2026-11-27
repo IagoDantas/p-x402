@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
-import { decodePaymentRequired, decodeSettlementResponse } from "@p-x402/core"
+import { decodePaymentRequired, decodeSettlementResponse, Px402Error } from "@p-x402/core"
 import { Hono } from "hono"
 import { type HonoPaywallConfig, type Px402Variables, pixPaywall } from "../src/hono"
 import {
@@ -43,6 +43,12 @@ function setup(extra: Partial<HonoPaywallConfig> = {}) {
     throw new Error("handler exploded")
   })
   app.get("/missing", paid({ amount: 500 }), (c) => c.json({ error: "nope" }, 404))
+  // Sets headers on c before returning, so a replacement response must not inherit them.
+  app.get("/leaky", paid({ amount: 500 }), (c) => {
+    c.header("x-secret", "1")
+    c.header("set-cookie", "session=abc")
+    return c.text("secret report")
+  })
   // A non-Error throw skips Hono's onError, so next() itself rejects in the middleware.
   app.get("/raw-throw", paid({ amount: 500 }), () => {
     stub.events.push("handler")
@@ -78,6 +84,17 @@ describe("pixPaywall (Hono)", () => {
     const settlement = decodeSettlementResponse(second.headers.get("PAYMENT-RESPONSE") ?? "")
     expect(settlement.success).toBe(true)
     expect(stub.events).toEqual(["/pix/charges", "/verify", "handler", "/settle"])
+  })
+
+  test("a bad route throws when the middleware is built, before any request", () => {
+    const pix = pixPaywall({
+      facilitatorUrl: FACILITATOR,
+      token: TOKEN,
+      fetch: stubFacilitator().fetch,
+    })
+    expect(() => pix({ amount: "abc" })).toThrow(Px402Error)
+    expect(() => pix({ amount: "500", resource: "ftp://x" })).toThrow(Px402Error)
+    expect(() => pix({ amount: "500" })).not.toThrow()
   })
 
   test("env requestIP feeds the per-IP cap", async () => {
@@ -158,8 +175,50 @@ describe("pixPaywall (Hono)", () => {
       headers: { "PAYMENT-SIGNATURE": paymentSignature(pixRequirements()) },
     })
     expect(res.status).toBe(402)
-    expect(await res.json()).toEqual({})
+    expect(await res.json()).toEqual({ error: "charge_already_consumed" })
   })
+  test("headers the handler set on c do not leak onto a settle-failure 402 or 502", async () => {
+    const { app, stub } = setup()
+    const init = {
+      headers: {
+        "PAYMENT-SIGNATURE": paymentSignature(
+          pixRequirements({ resourceUrl: "http://shop.test/leaky" }),
+        ),
+      },
+    }
+    stub.reply(
+      "/settle",
+      stub.json({
+        success: false,
+        errorReason: "charge_already_consumed",
+        transaction: "pix_char_mock_0001",
+        network: "pix:br",
+      }),
+    )
+    const consumed = await app.request("http://shop.test/leaky", init)
+    expect(consumed.status).toBe(402)
+    expect(await consumed.json()).toEqual({ error: "charge_already_consumed" })
+    expect(consumed.headers.get("x-secret")).toBeNull()
+    expect(consumed.headers.get("set-cookie")).toBeNull()
+
+    stub.reply("/settle", () => {
+      throw new TypeError("connection refused")
+    })
+    const unreachable = await app.request("http://shop.test/leaky", init)
+    expect(unreachable.status).toBe(502)
+    expect(await unreachable.text()).not.toContain("secret")
+    expect(unreachable.headers.get("x-secret")).toBeNull()
+    expect(unreachable.headers.get("set-cookie")).toBeNull()
+
+    stub.reply("/settle", undefined)
+    const ok = await app.request("http://shop.test/leaky", init)
+    expect(ok.status).toBe(200)
+    expect(await ok.text()).toBe("secret report")
+    expect(ok.headers.get("x-secret")).toBe("1")
+    expect(ok.headers.get("set-cookie")).toBe("session=abc")
+    expect(decodeSettlementResponse(ok.headers.get("PAYMENT-RESPONSE") ?? "").success).toBe(true)
+  })
+
   test("handler exception with an onError that answers 200: still no settle", async () => {
     const { app, stub } = setup()
     app.onError((_err, c) => c.text("recovered", 200))

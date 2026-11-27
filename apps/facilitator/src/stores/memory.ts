@@ -46,6 +46,8 @@ export function memoryStore(): ChargeStore {
       setOnce(id, "refundedAt", at)
     },
     async consume(id, at, key) {
+      const current = charges.get(id)
+      if (current && (current.disputedAt !== null || current.refundedAt !== null)) return false
       const record = setOnce(id, "consumedAt", at)
       if (!record) return false
       record.consumedKey = key ?? null

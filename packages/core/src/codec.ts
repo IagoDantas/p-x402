@@ -1,4 +1,5 @@
 import type { z } from "zod"
+import { bytesToBase64 } from "./crypto"
 import { Px402Error } from "./errors"
 import {
   type PaymentPayload,
@@ -17,10 +18,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true })
 
 /** Standard base64 of the UTF-8 bytes of `JSON.stringify(value)`. */
 export function encodeJsonHeader(value: unknown): string {
-  const bytes = encoder.encode(JSON.stringify(value))
-  let binary = ""
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary)
+  return bytesToBase64(encoder.encode(JSON.stringify(value)))
 }
 
 /** Inverse of {@link encodeJsonHeader}. Throws `Px402Error("invalid_header")`. */

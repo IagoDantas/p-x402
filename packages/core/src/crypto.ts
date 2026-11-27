@@ -1,5 +1,12 @@
 const encoder = new TextEncoder()
 
+/** Standard base64 of raw bytes (web-standard `btoa`, no Buffer). */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
 /**
  * Constant-time string comparison. Both sides are hashed first, so neither the
  * content nor the length of the secret leaks through timing.

@@ -7,6 +7,7 @@ export const PX402_ERROR_CODES = [
   "unsupported_scheme",
   "unsupported_network",
   "invalid_request",
+  "method_not_payable",
   // verify and settle
   "charge_not_found",
   "merchant_mismatch",
@@ -29,6 +30,7 @@ export const PX402_ERROR_CODES = [
   // webhook
   "invalid_webhook_secret",
   "invalid_webhook_payload",
+  "webhook_retry",
   // client
   "policy_exceeded",
   "no_supported_requirements",
@@ -56,6 +58,16 @@ export class Px402Error extends Error {
     this.code = code
     this.details = details
   }
+}
+
+/** JSON body of an HTTP error answered by the facilitator or the paywall. */
+export interface ErrorBody {
+  error: Px402ErrorCode
+  message?: string
+}
+
+export function errorBody(error: Px402ErrorCode, message?: string): ErrorBody {
+  return message === undefined ? { error } : { error, message }
 }
 
 export function isPx402Error(value: unknown): value is Px402Error {

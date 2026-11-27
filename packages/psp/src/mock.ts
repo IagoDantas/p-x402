@@ -1,4 +1,4 @@
-import { encodeEmv, Px402Error } from "@p-x402/core"
+import { encodeEmv, encodeTlv, Px402Error } from "@p-x402/core"
 import type {
   CreatePixChargeInput,
   PixCharge,
@@ -25,13 +25,13 @@ export interface MockPixProviderOptions {
   onWebhook?: (request: Request) => Promise<unknown>
 }
 
-interface MockCharge {
+/** Snapshot of a mock charge, as returned by `peek`. */
+export interface MockCharge {
   id: string
   amount: number
   status: PixChargeStatus
   expiresAt: number
   externalId: string
-  description: string | undefined
   paidAt: number | undefined
 }
 
@@ -55,8 +55,8 @@ export interface MockPixProvider extends PixProvider {
     options?: { secret?: string; envelopeId?: string; signature?: string },
   ): Promise<Request>
   setWebhookSink(sink: ((request: Request) => Promise<unknown>) | undefined): void
-  /** Inspect internal state in tests. */
-  peek(id: string): Readonly<MockCharge> | undefined
+  /** Copy of the internal state, for tests. */
+  peek(id: string): MockCharge | undefined
   readonly calls: { createCharge: number; getCharge: number }
 }
 
@@ -64,7 +64,9 @@ export interface MockPixProvider extends PixProvider {
 export function createMockPixProvider(options: MockPixProviderOptions = {}): MockPixProvider {
   const now = options.now ?? Date.now
   const secret = options.webhookSecret ?? "mock-webhook-secret"
-  if (secret.trim().length === 0) throw new Error("mock: webhookSecret must not be empty")
+  if (secret.trim().length === 0) {
+    throw new Px402Error("invalid_request", "mock: webhookSecret must not be empty")
+  }
   const prefix = options.idPrefix ?? "pix_char_mock_"
   const charges = new Map<string, MockCharge>()
   let sink = options.onWebhook
@@ -152,7 +154,6 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
         status: "PENDING",
         expiresAt: now() + input.expiresIn * 1000,
         externalId: input.externalId,
-        description: input.description,
         paidAt: undefined,
       }
       charges.set(id, charge)
@@ -194,13 +195,16 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
     setWebhookSink(next) {
       sink = next
     },
-    peek: (id) => charges.get(id),
+    peek: (id) => {
+      const charge = charges.get(id)
+      return charge ? { ...charge } : undefined
+    },
   }
 }
 
-/** A well-formed dynamic-style BR Code (EMV, tag 54 amount, valid CRC) that no bank will accept. */
+/** A well-formed static BR Code (no location URL; POI 12, tag 54 amount, valid CRC) that no bank will accept. */
 export function mockBrCode(chargeId: string, amountCentavos: number): string {
-  const merchantAccount = encodeEmvValue([
+  const merchantAccount = encodeTlv([
     { id: "00", value: "br.gov.bcb.pix" },
     { id: "01", value: `mock-${chargeId}`.slice(0, 77) },
   ])
@@ -214,10 +218,6 @@ export function mockBrCode(chargeId: string, amountCentavos: number): string {
     { id: "58", value: "BR" },
     { id: "59", value: "P-X402 MOCK" },
     { id: "60", value: "SAO PAULO" },
-    { id: "62", value: encodeEmvValue([{ id: "05", value: chargeId.slice(-25) }]) },
+    { id: "62", value: encodeTlv([{ id: "05", value: chargeId.slice(-25) }]) },
   ])
-}
-
-function encodeEmvValue(fields: { id: string; value: string }[]): string {
-  return fields.map((f) => `${f.id}${String(f.value.length).padStart(2, "0")}${f.value}`).join("")
 }

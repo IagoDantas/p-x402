@@ -21,6 +21,8 @@ import type { PaidFetch, WrapFetchOptions } from "./types"
 
 const DEFAULT_MAX_PER_REQUEST = 1000
 const DEFAULT_MAX_TOTAL = 5000
+/** Longest a paid request keeps polling settlement_pending, whatever expiresAt says. */
+const DEFAULT_MAX_WAIT_MS = 10 * 60_000
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -37,35 +39,57 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
   const initialDelayMs = options.retry?.initialDelayMs ?? 500
   const maxDelayMs = options.retry?.maxDelayMs ?? 5000
   const factor = options.retry?.factor ?? 2
+  const maxWaitMs = options.retry?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS
   const sleep = options.sleep ?? realSleep
   const now = options.now ?? Date.now
   let spent = 0
 
+  /**
+   * Sends the paid request until the server stops answering settlement_pending. With a Pix
+   * signature it keeps trying for up to maxWaitMs, even past expiresAt: a paid charge stays
+   * consumable for 24 h, and the facilitator answers a definitive charge_expired once an unpaid
+   * one has expired, so settlement_pending after expiry is a transient answer (PSP blip, another
+   * request holding the charge). Any other signature is sent once.
+   */
   async function retryLoop(
     request: Request,
     paymentSignature: string,
     chargeId: string,
-    deadline: number,
+    isPix: boolean,
   ): Promise<Response> {
     const details = { chargeId, paymentSignature }
+    const until = isPix ? now() + maxWaitMs : Number.NEGATIVE_INFINITY
+    const timeoutReason = isPix ? "max_wait" : "single_attempt"
     let backoff = initialDelayMs
     for (;;) {
-      const attempt = request.clone()
+      // The signature is a bearer proof for a paid charge: never let a redirect carry it elsewhere.
+      const attempt = new Request(request.clone(), { redirect: "manual" })
       attempt.headers.set(HEADER_PAYMENT_SIGNATURE, paymentSignature)
       const response = await fetchImpl(attempt)
+      if (isRedirect(response, new URL(request.url))) {
+        discardBody(response)
+        throw new Px402Error("policy_exceeded", "paid request was redirected", {
+          ...details,
+          reason: "redirected",
+          responseUrl: response.url,
+        })
+      }
       if (response.status !== 402) return response
       discardBody(response)
 
       const header = response.headers.get(HEADER_PAYMENT_RESPONSE)
       const reason = header === null ? undefined : readErrorReason(header)
       if (reason === "settlement_pending") {
-        if (now() > deadline) {
-          throw new Px402Error("payment_timeout", "charge expired before settlement", details)
+        if (now() > until) {
+          throw new Px402Error("payment_timeout", "gave up waiting for settlement", {
+            ...details,
+            reason: timeoutReason,
+          })
         }
         const wait = Math.max(retryAfterMs(response, now()), backoff)
         backoff = Math.min(backoff * factor, maxDelayMs)
-        // Never sleep much past the deadline: one last attempt right after it.
-        await sleep(Math.min(wait, Math.max(0, deadline - now()) + 1))
+        // Never sleep much past the cap: one last attempt right after it.
+        await sleep(Math.min(wait, Math.max(0, until - now()) + 1))
         continue
       }
       if (reason !== undefined && isPx402ErrorCode(reason)) {
@@ -78,19 +102,40 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
     }
   }
 
+  function checkAllowedOrigin(requestUrl: URL): void {
+    if (allowedOrigins && !originAllowed(requestUrl, allowedOrigins)) {
+      throw new Px402Error("policy_exceeded", "origin not allowed", {
+        reason: "origin_not_allowed",
+        origin: requestUrl.origin,
+      })
+    }
+  }
+
   async function resume(request: Request, paymentSignature: string): Promise<Response> {
     let chargeId = ""
-    let deadline = Number.NEGATIVE_INFINITY // unknown expiry: try once
+    let isPix = false // not a p-x402 Pix signature: try once
+    let resourceUrl: string | undefined
     try {
       const parsed = PixPaymentPayloadSchema.safeParse(decodePaymentPayload(paymentSignature))
       if (parsed.success) {
         chargeId = parsed.data.payload.chargeId
-        deadline = Date.parse(parsed.data.accepted.extra.expiresAt)
+        isPix = true
+        resourceUrl = parsed.data.accepted.extra.resourceUrl
       }
     } catch {
       // not a p-x402 Pix signature: send it once and interpret the answer
     }
-    return retryLoop(request, paymentSignature, chargeId, deadline)
+    // A Pix signature is a bearer proof for its charge: only send it to the origin it was paid for.
+    const requestUrl = new URL(request.url)
+    if (resourceUrl !== undefined && new URL(resourceUrl).origin !== requestUrl.origin) {
+      throw new Px402Error("policy_exceeded", "signature was paid for another origin", {
+        reason: "resource_origin_mismatch",
+        resourceUrl,
+        origin: requestUrl.origin,
+      })
+    }
+    checkAllowedOrigin(requestUrl)
+    return retryLoop(request, paymentSignature, chargeId, isPix)
   }
 
   async function paidFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -118,13 +163,10 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
 
     // Everything below up to payer.pay is synchronous so concurrent calls cannot overspend.
     checkResource(required, requirements, requestUrl)
-    if (allowedOrigins && !originAllowed(requestUrl, allowedOrigins)) {
-      throw new Px402Error("policy_exceeded", "origin not allowed", {
-        reason: "origin_not_allowed",
-        origin: requestUrl.origin,
-      })
+    checkAllowedOrigin(requestUrl)
+    if (payer.paysBrCode !== false) {
+      checkBrCode(extra.brCode, amount, payer.checksDynamicAmount === true)
     }
-    if (options.payer.paysBrCode !== false) checkBrCode(extra.brCode, amount)
     const value = Number(amount)
     if (value > maxPerRequest) {
       throw new Px402Error("policy_exceeded", "amount above maxPerRequest", {
@@ -179,7 +221,7 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
       // a logging hook must not lose a paid request
     }
 
-    return retryLoop(request, paymentSignature, extra.chargeId, Date.parse(extra.expiresAt))
+    return retryLoop(request, paymentSignature, extra.chargeId, true)
   }
 
   Object.defineProperty(paidFetch, "spent", { get: () => spent, enumerable: true })
@@ -217,17 +259,21 @@ function checkResource(
  * to pay it, since its resource checks would run against the wrong origin.
  */
 function checkNotRedirected(response: Response, requestUrl: URL): void {
-  const responseOrigin =
-    response.url !== "" && URL.canParse(response.url) ? new URL(response.url).origin : undefined
-  const foreign =
-    response.url !== "" && (responseOrigin === undefined || responseOrigin !== requestUrl.origin)
-  if (response.redirected || foreign) {
+  if (isRedirect(response, requestUrl)) {
     throw new Px402Error("policy_exceeded", "402 came from a redirected response", {
       reason: "redirected",
       origin: requestUrl.origin,
       responseUrl: response.url,
     })
   }
+}
+
+/** A redirect (followed, or held back by redirect: "manual") or an answer from another origin. */
+function isRedirect(response: Response, requestUrl: URL): boolean {
+  if (response.redirected || response.type === "opaqueredirect") return true
+  if (response.status >= 300 && response.status < 400) return true
+  if (response.url === "") return false
+  return !URL.canParse(response.url) || new URL(response.url).origin !== requestUrl.origin
 }
 
 function originAllowed(url: URL, allowed: string[]): boolean {
@@ -237,11 +283,16 @@ function originAllowed(url: URL, allowed: string[]): boolean {
   })
 }
 
-function checkBrCode(brCode: string, amount: string): void {
+function checkBrCode(brCode: string, amount: string, payerChecksDynamic: boolean): void {
   const info = parseBrCode(brCode)
   const fail = (reason: string, message: string) =>
     new Px402Error("invalid_payment_requirements", message, { reason, amount })
   if (!info?.crcValid) throw fail("brcode_invalid", "BR Code is malformed or has a bad CRC")
+  // Tag 54 of a dynamic code is not what the bank charges: only a payer that checks the resolved
+  // amount may pay one.
+  if (info.hasLocation && !payerChecksDynamic) {
+    throw fail("brcode_dynamic_unverified", "BR Code is dynamic; its amount cannot be checked here")
+  }
   if (info.amount === undefined) throw fail("brcode_amount_missing", "BR Code has no amount")
   if (info.amount !== amount) {
     throw fail(

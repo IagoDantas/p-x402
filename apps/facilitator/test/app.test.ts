@@ -6,8 +6,17 @@ import {
   SupportedResponseSchema,
   type VerifyResponse,
 } from "@p-x402/core"
-import { createMockPixProvider, type MockPixProvider, type PixProvider } from "@p-x402/psp"
-import { createFacilitator, type FacilitatorOptions } from "../src/app"
+import {
+  createMockPixProvider,
+  type MockPixProvider,
+  type PixCharge,
+  type PixChargeStatus,
+  type PixProvider,
+  signAbacatePayWebhook,
+  WEBHOOK_SECRET_HEADER,
+  WEBHOOK_SIGNATURE_HEADER,
+} from "@p-x402/psp"
+import { createFacilitator, type FacilitatorMerchant, type FacilitatorOptions } from "../src/app"
 import type { ChargeStore } from "../src/store"
 import { bunSqliteStore } from "../src/stores/bun-sqlite"
 import { memoryStore } from "../src/stores/memory"
@@ -126,13 +135,79 @@ function wrapProvider(mock: MockPixProvider, overrides: Partial<PixProvider>): P
   }
 }
 
+/** A provider whose getCharge reports `paidAt` (or none at all) for a PAID charge. */
+function withPaidAt(mock: MockPixProvider, paidAt: string | undefined): PixProvider {
+  return wrapProvider(mock, {
+    async getCharge(id) {
+      const state = await mock.getCharge(id)
+      if (paidAt === undefined) delete state.paidAt
+      else if (state.status === "PAID") state.paidAt = paidAt
+      return state
+    },
+  })
+}
+
+/** Signed webhook request carrying `raw` as its body. */
+async function signedWebhook(raw: string): Promise<Request> {
+  return new Request("http://facilitator.local/webhooks/pix", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [WEBHOOK_SECRET_HEADER]: "mock-webhook-secret",
+      [WEBHOOK_SIGNATURE_HEADER]: await signAbacatePayWebhook(raw),
+    },
+    body: raw,
+  })
+}
+
 const backends: [string, () => ChargeStore][] = [
   ["memoryStore", memoryStore],
   ["bunSqliteStore", () => bunSqliteStore(":memory:")],
 ]
 
+describe("createFacilitator merchant validation", () => {
+  const ok = { id: "a", token: "tok-a", payTo: "a" }
+  const cases: [string, FacilitatorMerchant[]][] = [
+    ["no merchants", []],
+    ["empty id", [{ ...ok, id: "" }]],
+    ["empty token", [{ ...ok, token: "" }]],
+    ["empty payTo", [{ ...ok, payTo: "" }]],
+    ["duplicate ids", [ok, { id: "a", token: "tok-b", payTo: "b" }]],
+    ["duplicate tokens", [ok, { id: "b", token: "tok-a", payTo: "b" }]],
+  ]
+  for (const [name, merchants] of cases) {
+    test(`${name} → throws`, () => {
+      const make = () =>
+        createFacilitator({ provider: createMockPixProvider(), store: memoryStore(), merchants })
+      expect(make).toThrow(/^facilitator: /)
+      expect(make).toThrow(Px402Error)
+    })
+  }
+
+  test("distinct, non-empty merchants are accepted", () => {
+    const merchants = [ok, { id: "b", token: "tok-b", payTo: "b" }]
+    expect(() =>
+      createFacilitator({ provider: createMockPixProvider(), store: memoryStore(), merchants }),
+    ).not.toThrow()
+  })
+})
+
 for (const [storeName, makeStore] of backends) {
   describe(`facilitator (${storeName})`, () => {
+    /** A fresh store that counts insert calls. */
+    function countingStore() {
+      const inner = makeStore()
+      const counts = { insert: 0 }
+      const store: ChargeStore = {
+        ...inner,
+        async insert(record) {
+          counts.insert++
+          return inner.insert(record)
+        },
+      }
+      return { store, counts }
+    }
+
     test("GET /supported advertises exact/pix:br with the provider", async () => {
       const f = setup(makeStore)
       const res = await f.app.request("/supported")
@@ -239,7 +314,7 @@ for (const [storeName, makeStore] of backends) {
       expect(JSON.stringify(json)).not.toContain("base64")
     })
 
-    test("store.insert failure after the PSP charge → 502 psp_error", async () => {
+    test("store.insert failure after the PSP charge → 500 unexpected_error (our fault, not the PSP's)", async () => {
       const inner = makeStore()
       const store: ChargeStore = {
         ...inner,
@@ -249,8 +324,8 @@ for (const [storeName, makeStore] of backends) {
       }
       const f = setup(() => store)
       const res = await f.post("/pix/charges", { resource: { url: RESOURCE }, amount: "500" })
-      expect(res.status).toBe(502)
-      expect(await res.json()).toEqual({ error: "psp_error" })
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({ error: "unexpected_error" })
       expect(f.mock.calls.createCharge).toBe(1)
     })
 
@@ -318,10 +393,38 @@ for (const [storeName, makeStore] of backends) {
         },
         getCharge: mock.getCharge,
       }
-      const f = setup(makeStore, { provider: failing })
+      const { store, counts } = countingStore()
+      const f = setup(() => store, { provider: failing })
       const res = await f.post("/pix/charges", { resource: { url: RESOURCE }, amount: "500" })
       expect(res.status).toBe(502)
       expect(await res.json()).toEqual({ error: "psp_error" })
+      expect(counts.insert).toBe(0)
+    })
+
+    describe("PSP returned an unusable charge → 502 psp_error and no record", () => {
+      const cases: [string, (c: PixCharge) => PixCharge][] = [
+        ["amount differs", (c) => ({ ...c, amount: c.amount + 1 })],
+        ["empty brCode", (c) => ({ ...c, brCode: "" })],
+        ["expiresAt not a date", (c) => ({ ...c, expiresAt: "not-a-date" })],
+      ]
+      for (const [name, tamper] of cases) {
+        test(name, async () => {
+          const mock = createMockPixProvider({ now: () => T0 })
+          const bad = wrapProvider(mock, {
+            async createCharge(input) {
+              return tamper(await mock.createCharge(input))
+            },
+          })
+          const { store, counts } = countingStore()
+          const f = setup(() => store, { provider: bad })
+          const res = await f.post("/pix/charges", { resource: { url: RESOURCE }, amount: "500" })
+          expect(res.status).toBe(502)
+          expect(await res.json()).toEqual({ error: "psp_error" })
+          expect(mock.calls.createCharge).toBe(1)
+          expect(counts.insert).toBe(0)
+          expect(await store.get("pix_char_mock_0001")).toBeUndefined()
+        })
+      }
     })
 
     test("happy path: verify then settle", async () => {
@@ -487,6 +590,35 @@ for (const [storeName, makeStore] of backends) {
     })
 
     describe("settle idempotency", () => {
+      test("a store failure inside /settle → 500 unexpected_error, then a same-key retry settles", async () => {
+        const inner = makeStore()
+        let failConsume = true
+        const store: ChargeStore = {
+          ...inner,
+          get: (id) => inner.get(id),
+          async consume(id, at, key) {
+            if (failConsume) {
+              failConsume = false
+              throw new Error("db locked")
+            }
+            return inner.consume(id, at, key)
+          },
+        }
+        const f = setup(() => store)
+        const req = await f.charge()
+        await f.mock.simulatePayment(req.extra.chargeId)
+        const failed = await f.post("/settle", f.body(req), "tok-loja1", {
+          "idempotency-key": "k1",
+        })
+        expect(failed.status).toBe(500)
+        // Nothing internal is echoed back.
+        expect(await failed.json()).toEqual({ error: "unexpected_error" })
+        expect((await f.store.get(req.extra.chargeId))?.consumedAt).toBeNull()
+        const retry = await f.settle(f.body(req), "tok-loja1", "k1")
+        expect(retry.json.success).toBe(true)
+        expect((await f.store.get(req.extra.chargeId))?.consumedKey).toBe("k1")
+      })
+
       test("same key replays the same success; other key or no key → consumed", async () => {
         const f = setup(makeStore)
         const req = await f.charge()
@@ -663,6 +795,13 @@ for (const [storeName, makeStore] of backends) {
           "requirements_mismatch",
         ],
         [
+          "accepted names another charge",
+          (b) => {
+            b.paymentPayload.accepted.extra.chargeId = "pix_char_mock_0002"
+          },
+          "requirements_mismatch",
+        ],
+        [
           "unknown charge",
           (b) => {
             b.paymentPayload.accepted.extra.chargeId = "pix_char_mock_9999"
@@ -684,6 +823,37 @@ for (const [storeName, makeStore] of backends) {
             b.x402Version = 1
           },
           "invalid_x402_version",
+        ],
+        [
+          "wrong payload version",
+          (b) => {
+            b.paymentPayload.x402Version = 1
+          },
+          "invalid_x402_version",
+        ],
+        [
+          // FacilitatorRequestSchema takes any scheme string (spec-level requirements), so this is
+          // not a 400 invalid_payload: pixKindCheck refuses it as unsupported_scheme.
+          "scheme upto",
+          (b) => {
+            b.paymentRequirements.scheme = "upto" as "exact"
+          },
+          "unsupported_scheme",
+        ],
+        [
+          "wrong accepted network",
+          (b) => {
+            b.paymentPayload.accepted.network = "eip155:8453" as "pix:br"
+          },
+          "unsupported_network",
+        ],
+        [
+          "paymentFlow missing on both sides",
+          (b) => {
+            delete (b.paymentPayload.accepted.extra as { paymentFlow?: string }).paymentFlow
+            delete (b.paymentRequirements.extra as { paymentFlow?: string }).paymentFlow
+          },
+          "invalid_payment_requirements",
         ],
       ]
       for (const [name, mutate, reason] of cases) {
@@ -806,6 +976,160 @@ for (const [storeName, makeStore] of backends) {
       })
     }
 
+    for (const status of ["CANCELLED", "FAILED"] as const) {
+      test(`PSP ${status} → charge_failed, nothing consumed`, async () => {
+        const mock = createMockPixProvider({ now: () => T0 })
+        const dead = wrapProvider(mock, {
+          async getCharge(id) {
+            return { ...(await mock.getCharge(id)), status: status as PixChargeStatus }
+          },
+        })
+        const f = setup(makeStore, { provider: dead })
+        const req = await f.charge()
+        expect((await f.verify(f.body(req))).json).toEqual({
+          isValid: false,
+          invalidReason: "charge_failed",
+        })
+        expect((await f.settle(f.body(req))).json.errorReason).toBe("charge_failed")
+        const record = await f.store.get(req.extra.chargeId)
+        expect(record?.consumedAt).toBeNull()
+        expect(record?.paidAt).toBeNull()
+      })
+    }
+
+    test("PSP PAID without paidAt: verify writes nothing, settle records now()", async () => {
+      // The AbacatePay path: getCharge never reports paidAt.
+      const mock = createMockPixProvider({ now: () => T0 })
+      const f = setup(makeStore, { provider: withPaidAt(mock, undefined) })
+      const req = await f.charge()
+      await mock.simulatePayment(req.extra.chargeId)
+      f.advance(1_000)
+      expect((await f.verify(f.body(req))).json).toEqual({ isValid: true })
+      expect((await f.store.get(req.extra.chargeId))?.paidAt).toBeNull()
+      expect((await f.settle(f.body(req))).json.success).toBe(true)
+      const record = await f.store.get(req.extra.chargeId)
+      expect(record?.paidAt).toBe(f.now())
+      expect(record?.consumedAt).toBe(f.now())
+    })
+
+    test("PSP PAID without paidAt: the grace runs from expiresAt", async () => {
+      const mock = createMockPixProvider({ now: () => T0 })
+      const f = setup(makeStore, { provider: withPaidAt(mock, undefined) })
+      const inGrace = await f.charge()
+      const late = await f.charge()
+      await mock.simulatePayment(inGrace.extra.chargeId)
+      await mock.simulatePayment(late.extra.chargeId)
+      const expiresAt = Date.parse(inGrace.extra.expiresAt)
+      f.advance(expiresAt + 86_400_000 - 1 - T0)
+      expect((await f.settle(f.body(inGrace))).json.success).toBe(true)
+      expect((await f.store.get(inGrace.extra.chargeId))?.paidAt).toBe(f.now())
+      f.advance(2)
+      // runChecks refuses past expiresAt + grace without asking the PSP
+      const calls = mock.calls.getCharge
+      expect((await f.verify(f.body(late))).json.invalidReason).toBe("charge_expired")
+      expect((await f.settle(f.body(late))).json.errorReason).toBe("charge_expired")
+      expect(mock.calls.getCharge).toBe(calls)
+      const record = await f.store.get(late.extra.chargeId)
+      expect(record?.paidAt).toBeNull()
+      expect(record?.consumedAt).toBeNull()
+    })
+
+    test("PSP PAID without paidAt: a webhook-stored paidAt starts the grace", async () => {
+      const mock = createMockPixProvider({ now: () => T0 })
+      const f = setup(makeStore, { provider: withPaidAt(mock, undefined) })
+      const early = await f.charge()
+      const late = await f.charge()
+      f.advance(10_000)
+      for (const req of [early, late]) {
+        const id = req.extra.chargeId
+        await mock.simulatePayment(id)
+        const res = await f.fetch(await mock.webhookRequest("paid", id))
+        expect(await res.json()).toEqual({ ok: true, applied: true })
+        expect((await f.store.get(id))?.paidAt).toBe(T0 + 10_000)
+      }
+      f.advance(86_400_000 - 1)
+      expect((await f.verify(f.body(late))).json).toEqual({ isValid: true })
+      expect((await f.settle(f.body(early))).json.success).toBe(true)
+      f.advance(2)
+      // Still before expiresAt + grace, so runChecks asks the PSP, then refuses on paidAt + grace.
+      expect(f.now()).toBeLessThan(Date.parse(late.extra.expiresAt) + 86_400_000)
+      const calls = mock.calls.getCharge
+      expect((await f.verify(f.body(late))).json.invalidReason).toBe("charge_expired")
+      const afterVerify = mock.calls.getCharge
+      expect(afterVerify).toBeGreaterThan(calls)
+      expect((await f.settle(f.body(late))).json.errorReason).toBe("charge_expired")
+      expect(mock.calls.getCharge).toBeGreaterThan(afterVerify)
+      const record = await f.store.get(late.extra.chargeId)
+      expect(record?.paidAt).toBe(T0 + 10_000)
+      expect(record?.consumedAt).toBeNull()
+    })
+
+    describe("applyState clamps a PSP paidAt in the future to now()", () => {
+      const future = new Date(T0 + 86_400_000).toISOString()
+      const past = new Date(T0 - 5_000).toISOString()
+      for (const [label, paidAt, expected] of [
+        ["future", future, "now"],
+        ["past", past, T0 - 5_000],
+      ] as const) {
+        for (const via of ["settle", "webhook"] as const) {
+          test(`${label} paidAt via ${via}`, async () => {
+            const mock = createMockPixProvider({ now: () => T0 })
+            const f = setup(makeStore, { provider: withPaidAt(mock, paidAt) })
+            const req = await f.charge()
+            const id = req.extra.chargeId
+            await mock.simulatePayment(id)
+            f.advance(1_000)
+            if (via === "settle") {
+              expect((await f.settle(f.body(req))).json.success).toBe(true)
+            } else {
+              const res = await f.fetch(await mock.webhookRequest("paid", id))
+              expect(await res.json()).toEqual({ ok: true, applied: true })
+            }
+            expect((await f.store.get(id))?.paidAt).toBe(expected === "now" ? f.now() : expected)
+          })
+        }
+      }
+    })
+
+    test("past expiresAt + grace the PSP is not asked at all", async () => {
+      const f = setup(makeStore)
+      const req = await f.charge()
+      await f.mock.simulatePayment(req.extra.chargeId)
+      f.advance(300_000 + 86_400_000 + 1)
+      const calls = f.mock.calls.getCharge
+      for (let i = 0; i < 5; i++) {
+        expect((await f.verify(f.body(req))).json.invalidReason).toBe("charge_expired")
+        expect((await f.settle(f.body(req))).json.errorReason).toBe("charge_expired")
+      }
+      expect(f.mock.calls.getCharge).toBe(calls)
+    })
+
+    for (const kind of ["dispute", "refund"] as const) {
+      test(`a ${kind} recorded while settle waits on the PSP stops the consume`, async () => {
+        const mock = createMockPixProvider({ now: () => T0 })
+        let store: ChargeStore | undefined
+        const racing = wrapProvider(mock, {
+          async getCharge(id) {
+            const state = await mock.getCharge(id)
+            // A webhook lands between runChecks' flag check and consume.
+            if (kind === "dispute") await store?.markDisputed(id, T0)
+            else await store?.markRefunded(id, T0)
+            return state
+          },
+        })
+        const f = setup(makeStore, { provider: racing })
+        store = f.store
+        const req = await f.charge()
+        await mock.simulatePayment(req.extra.chargeId)
+        const result = await f.settle(f.body(req))
+        expect(result.json.success).toBe(false)
+        expect(result.json.errorReason).toBe(
+          kind === "dispute" ? "charge_disputed" : "charge_refunded",
+        )
+        expect((await f.store.get(req.extra.chargeId))?.consumedAt).toBeNull()
+      })
+    }
+
     test("refunded at the PSP → charge_refunded and recorded by settle", async () => {
       const f = setup(makeStore)
       const req = await f.charge()
@@ -915,6 +1239,38 @@ for (const [storeName, makeStore] of backends) {
         expect((await f.store.get(id))?.paidAt).toBe(T0)
       })
 
+      test("store failure during a webhook with forgetWebhookEvent also failing → 503 webhook_retry", async () => {
+        const inner = makeStore()
+        let failGet = false
+        let forgets = 0
+        const store: ChargeStore = {
+          ...inner,
+          async get(id) {
+            if (failGet) {
+              failGet = false
+              throw new Error("db locked")
+            }
+            return inner.get(id)
+          },
+          async forgetWebhookEvent() {
+            forgets++
+            throw new Error("db gone")
+          },
+        }
+        const f = setup(() => store)
+        const req = await f.charge()
+        const id = req.extra.chargeId
+        await f.mock.simulatePayment(id)
+        failGet = true
+        const res = await f.fetch(
+          await f.mock.webhookRequest("paid", id, { envelopeId: "log_db_forget" }),
+        )
+        expect(res.status).toBe(503)
+        expect(await res.json()).toEqual({ error: "webhook_retry" })
+        expect(forgets).toBe(1)
+        expect((await f.store.get(id))?.paidAt).toBeNull()
+      })
+
       test("wrong or empty secret → 401", async () => {
         const f = setup(makeStore)
         const req = await f.charge()
@@ -937,6 +1293,43 @@ for (const [storeName, makeStore] of backends) {
           body: "{",
         })
         expect(res.status).toBe(400)
+      })
+
+      test("correctly signed body that is not JSON → 400", async () => {
+        const f = setup(makeStore)
+        const res = await f.fetch(await signedWebhook("{"))
+        expect(res.status).toBe(400)
+        expect(await res.json()).toEqual({ error: "invalid_webhook_payload" })
+      })
+
+      test("right secret, wrong signature → 400 and the envelope id is not recorded", async () => {
+        const f = setup(makeStore)
+        const req = await f.charge()
+        const id = req.extra.chargeId
+        await f.mock.simulatePayment(id)
+        const forged = await f.mock.webhookRequest("paid", id, {
+          envelopeId: "log_sig",
+          signature: "AAAA",
+        })
+        const res = await f.fetch(forged)
+        expect(res.status).toBe(400)
+        expect(await res.json()).toEqual({ error: "invalid_webhook_payload" })
+        expect((await f.store.get(id))?.paidAt).toBeNull()
+        // a valid delivery with the same envelope id is processed, not a duplicate
+        const valid = await f.fetch(
+          await f.mock.webhookRequest("paid", id, { envelopeId: "log_sig" }),
+        )
+        expect(await valid.json()).toEqual({ ok: true, applied: true })
+        expect((await f.store.get(id))?.paidAt).toBe(T0)
+      })
+
+      test("an event of another kind without a charge is ignored with 200", async () => {
+        const f = setup(makeStore)
+        const raw = JSON.stringify({ id: "log_other", event: "billing.paid" })
+        const res = await f.fetch(await signedWebhook(raw))
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ ok: true, ignored: true })
+        expect(f.mock.calls.getCharge).toBe(0)
       })
 
       test("provider without parseWebhook → 404", async () => {
@@ -1086,6 +1479,35 @@ for (const [storeName, makeStore] of backends) {
       const res = await h.post(`/dev/charges/${r3.extra.chargeId}/simulate-payment`, {}, null)
       expect(res.status).toBe(404)
       expect(mock.peek(r3.extra.chargeId)?.status).toBe("PENDING")
+    })
+
+    test("dev simulate drops the cached pending PSP answer", async () => {
+      const f = setup(makeStore, { devSimulate: true })
+      const req = await f.charge()
+      const before = await f.verify(f.body(req))
+      expect(before.json).toMatchObject({ isValid: false, invalidReason: "settlement_pending" })
+      expect(f.mock.calls.getCharge).toBe(1)
+      const res = await f.post(`/dev/charges/${req.extra.chargeId}/simulate-payment`, {}, null)
+      expect(res.status).toBe(200)
+      // Same instant: without the cache drop the pending answer would be reused.
+      const after = await f.verify(f.body(req))
+      expect(after.json.isValid).toBe(true)
+      expect(f.mock.calls.getCharge).toBe(2)
+    })
+
+    test("dev simulate: provider simulatePayment failure → 502 psp_error", async () => {
+      const mock = createMockPixProvider({ now: () => T0 })
+      const broken = wrapProvider(mock, {
+        async simulatePayment() {
+          throw new Px402Error("psp_error", "sandbox down")
+        },
+      })
+      const f = setup(makeStore, { devSimulate: true, provider: broken })
+      const req = await f.charge()
+      const res = await f.post(`/dev/charges/${req.extra.chargeId}/simulate-payment`, {}, null)
+      expect(res.status).toBe(502)
+      expect(await res.json()).toEqual({ error: "psp_error" })
+      expect(mock.peek(req.extra.chargeId)?.status).toBe("PENDING")
     })
   })
 }

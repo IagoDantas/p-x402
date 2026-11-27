@@ -36,7 +36,7 @@ export interface ChargeStore {
   markRefunded(id: string, at: number): Promise<void>
   /**
    * Atomically sets consumedAt and consumedKey (key or null) together; true only for the single
-   * caller that set them.
+   * caller that set them. A disputed or refunded charge is never consumed (false).
    */
   consume(id: string, at: number, key?: string): Promise<boolean>
   /**

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { type ChargeRecord, type ChargeStore, WEBHOOK_EVENT_RETENTION_MS } from "../src/store"
 import { bunSqliteStore } from "../src/stores/bun-sqlite"
 import { memoryStore } from "../src/stores/memory"
@@ -41,6 +44,21 @@ for (const [name, make] of backends) {
       expect(await store.get("c2")).toEqual(bare)
     })
 
+    test("brCodeBase64 round-trips", async () => {
+      const store = make()
+      const withQr = { ...record("c1"), brCodeBase64: "data:image/png;base64,AAAA" }
+      await store.insert(withQr)
+      expect(await store.get("c1")).toEqual(withQr)
+    })
+
+    test("markPaid, markDisputed, markRefunded on a missing id are no-ops", async () => {
+      const store = make()
+      await store.markPaid("nope", 1)
+      await store.markDisputed("nope", 2)
+      await store.markRefunded("nope", 3)
+      expect(await store.get("nope")).toBeUndefined()
+    })
+
     test("insert rejects a duplicate id", async () => {
       const store = make()
       await store.insert(record("c1"))
@@ -80,6 +98,18 @@ for (const [name, make] of backends) {
       const results = await Promise.all([store.consume("c2", 20), store.consume("c2", 21)])
       expect(results.filter(Boolean)).toHaveLength(1)
       expect(await store.consume("missing", 1)).toBe(false)
+    })
+
+    test("consume refuses a disputed or refunded charge", async () => {
+      const store = make()
+      await store.insert(record("d"))
+      await store.insert(record("r"))
+      await store.markDisputed("d", 5)
+      await store.markRefunded("r", 5)
+      expect(await store.consume("d", 10)).toBe(false)
+      expect(await store.consume("r", 10)).toBe(false)
+      expect((await store.get("d"))?.consumedAt).toBeNull()
+      expect((await store.get("r"))?.consumedAt).toBeNull()
     })
 
     test("consume stores the idempotency key atomically with consumedAt", async () => {
@@ -147,3 +177,27 @@ for (const [name, make] of backends) {
     })
   })
 }
+
+describe("bunSqliteStore on a file", () => {
+  test("a second store on the same path sees paid, consumed and webhook state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "p-x402-store-"))
+    try {
+      const path = join(dir, "charges.db")
+      const first = bunSqliteStore(path)
+      await first.insert(record("c1"))
+      await first.markPaid("c1", 2000)
+      expect(await first.consume("c1", 3000, "k1")).toBe(true)
+      expect(await first.recordWebhookEvent("e1", 4000)).toBe(true)
+
+      const second = bunSqliteStore(path)
+      const got = await second.get("c1")
+      expect(got).toEqual({ ...record("c1"), paidAt: 2000, consumedAt: 3000, consumedKey: "k1" })
+      expect(await second.recordWebhookEvent("e1", 5000)).toBe(false)
+      expect(await second.consume("c1", 6000, "k1")).toBe(false)
+      expect(await second.consume("c1", 6000)).toBe(false)
+      expect((await second.get("c1"))?.consumedAt).toBe(3000)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})

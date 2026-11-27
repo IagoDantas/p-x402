@@ -13,7 +13,7 @@ export interface BrCodeInfo {
   amount?: string
   /** CRC16 in tag 63 matches the payload. */
   crcValid: boolean
-  /** Tag 26 carries a location URL (dynamic COB code); its amount lives behind that URL. */
+  /** The Pix template carries a location URL (dynamic COB code); its amount lives behind that URL. */
   hasLocation: boolean
   fields: EmvField[]
 }
@@ -30,10 +30,14 @@ export function crc16(text: string): string {
   return crc.toString(16).toUpperCase().padStart(4, "0")
 }
 
+/** Encodes TLV fields (id, two-digit length, value) without a CRC; used for nested templates. */
+export function encodeTlv(fields: EmvField[]): string {
+  return fields.map((f) => `${f.id}${String(f.value.length).padStart(2, "0")}${f.value}`).join("")
+}
+
 /** Encodes TLV fields and appends tag 63 with the CRC. */
 export function encodeEmv(fields: EmvField[]): string {
-  const body = fields.map((f) => `${f.id}${String(f.value.length).padStart(2, "0")}${f.value}`)
-  const withoutCrc = `${body.join("")}6304`
+  const withoutCrc = `${encodeTlv(fields)}6304`
   return `${withoutCrc}${crc16(withoutCrc)}`
 }
 
@@ -68,19 +72,43 @@ export function brlToCentavos(value: string): string | undefined {
   return total.toString()
 }
 
-/** Returns null when the text is not a well-formed EMV payload. */
+/** BR Codes are printable ASCII; outside it, field lengths and the CRC depend on the decoder's encoding. */
+const PRINTABLE_ASCII = /^[\x20-\x7E]+$/
+/** GUI (sub-tag 00) of the Pix merchant account template. */
+const PIX_GUI = "br.gov.bcb.pix"
+
+function hasDuplicateIds(fields: EmvField[]): boolean {
+  return new Set(fields.map((f) => f.id)).size !== fields.length
+}
+
+/**
+ * Returns null when the text is not a well-formed Pix BR Code. Ambiguous codes are refused, since
+ * decoders disagree on how to read them and an amount check on one reading proves nothing: a
+ * non-ASCII character, a repeated tag, a merchant account template (tags 26-51) whose nested
+ * fields do not parse, or anything other than exactly one Pix template.
+ */
 export function parseBrCode(text: string): BrCodeInfo | null {
+  if (!PRINTABLE_ASCII.test(text)) return null
   const fields = parseEmv(text)
-  if (!fields || fields.length === 0) return null
+  if (!fields || fields.length === 0 || hasDuplicateIds(fields)) return null
+  let pix: EmvField[] | undefined
+  for (const field of fields) {
+    const id = Number(field.id)
+    if (id < 26 || id > 51) continue
+    const sub = parseEmv(field.value)
+    if (!sub || hasDuplicateIds(sub)) return null
+    if (sub.find((f) => f.id === "00")?.value.toLowerCase() !== PIX_GUI) continue
+    if (pix) return null
+    pix = sub
+  }
+  if (!pix) return null
   const last = fields[fields.length - 1]
   const crcValid =
     last !== undefined &&
     last.id === "63" &&
     last.value.length === 4 &&
     crc16(text.slice(0, -4)) === last.value.toUpperCase()
-  const merchantAccount = fields.find((f) => f.id === "26")
-  const sub = merchantAccount ? (parseEmv(merchantAccount.value) ?? []) : []
-  const hasLocation = sub.some((f) => f.id === "25")
+  const hasLocation = pix.some((f) => f.id === "25")
   const rawAmount = fields.find((f) => f.id === "54")?.value
   const amount = rawAmount === undefined ? undefined : brlToCentavos(rawAmount)
   const info: BrCodeInfo = { crcValid, hasLocation, fields }

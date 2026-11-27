@@ -19,6 +19,13 @@ export interface PixPayer {
    * from paying a code whose amount differs from the advertised one. Default true.
    */
   readonly paysBrCode?: boolean
+  /**
+   * A dynamic BR Code (its Pix merchant-account template carries a location URL) carries its real amount in the payload behind
+   * that URL; the bank pays that amount, not tag 54. The client cannot check it offline, so it
+   * refuses dynamic codes unless the payer sets this to true and itself refuses to pay a resolved
+   * amount above `amount`. Default false.
+   */
+  readonly checksDynamicAmount?: boolean
 }
 
 export interface PaymentEvent {
@@ -42,6 +49,12 @@ export interface RetryOptions {
   initialDelayMs?: number
   maxDelayMs?: number
   factor?: number
+  /**
+   * How long a paid request keeps retrying settlement_pending, counted from the first paid
+   * attempt. It does not stop at the charge's expiresAt: a paid charge stays consumable for 24 h,
+   * and the server answers charge_expired once an unpaid one has expired. Default 600000 (10 min).
+   */
+  maxWaitMs?: number
 }
 
 export interface WrapFetchOptions {

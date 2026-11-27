@@ -1,5 +1,6 @@
 import {
   FacilitatorRequestSchema,
+  isPx402Error,
   matchPixRequirements,
   type PaymentRequirements,
   PIX_NETWORK,
@@ -44,7 +45,10 @@ export type CheckResult =
       reason: Px402ErrorCode
       /** "" when no chargeId could be read. */
       chargeId: string
-      /** 400 for an unreadable body, 200 for every other refusal. */
+      /**
+       * 400 only when the outer x402 envelope cannot be read; a Pix-specific part that fails its
+       * schema (requirements, payload) is an ordinary 200 refusal.
+       */
       status: 200 | 400
       record?: ChargeRecord
       observation?: PspObservation
@@ -79,7 +83,7 @@ function pixKindCheck(req: PaymentRequirements): Px402ErrorCode | null {
 }
 
 /** Decides from the PSP answer alone whether the charge is payable now. */
-export function judgePsp(
+function judgePsp(
   record: ChargeRecord,
   observation: PspObservation,
   now: number,
@@ -175,12 +179,23 @@ export async function runChecks(ctx: CheckContext, body: unknown): Promise<Check
   if (record.consumedAt !== null) return fail("charge_already_consumed", chargeId, { record })
   if (record.refundedAt !== null) return fail("charge_refunded", chargeId, { record })
   if (record.disputedAt !== null) return fail("charge_disputed", chargeId, { record })
+  // Past expiresAt + grace no PSP answer can make the charge payable (see judgePsp): refuse without
+  // asking, so replaying an old signature cannot make us call the PSP.
+  if (ctx.now() > Date.parse(record.expiresAt) + ctx.paidGraceMs) {
+    return fail("charge_expired", chargeId, { record })
+  }
 
   // The PSP is the truth.
   let observation: PspObservation
   try {
     observation = { state: await ctx.observe(chargeId) }
   } catch (error) {
+    // Answered as settlement_pending; log the cause (never the provider key, which errors omit).
+    console.error(
+      "facilitator: getCharge failed",
+      chargeId,
+      isPx402Error(error) ? error.code : error,
+    )
     observation = { error }
   }
   const reason = judgePsp(record, observation, ctx.now(), ctx.paidGraceMs)

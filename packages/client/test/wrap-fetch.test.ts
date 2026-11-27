@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { decodePaymentPayload, isPx402Error, type Px402Error } from "@p-x402/core"
+import {
+  decodePaymentPayload,
+  encodeEmv,
+  encodePaymentPayload,
+  encodeTlv,
+  isPx402Error,
+  type Px402Error,
+} from "@p-x402/core"
 import { type PaymentEvent, wrapFetch } from "../src"
 import {
   brCode,
@@ -154,7 +161,29 @@ describe("wrapFetch", () => {
     expect(signatures[0]).not.toBeNull()
   })
 
-  test("pending past expiresAt -> payment_timeout with details", async () => {
+  test("settlement_pending with an HTTP-date Retry-After sleeps until that date", async () => {
+    const clock = fakeClock()
+    const server = scriptedServer((attempt, _request, seen) => {
+      if (seen.signature === null) return challenge(paymentRequired([pixRequirements()]))
+      if (attempt === 1) {
+        const at = new Date(clock.now() + 3000).toUTCString()
+        return refused("settlement_pending", "pix_char_mock_0001", at)
+      }
+      return new Response("ok")
+    })
+    const { payer } = countingPayer()
+    const paid = wrapFetch(server.fetch, {
+      payer,
+      now: clock.now,
+      sleep: clock.sleep,
+      retry: { initialDelayMs: 500 },
+    })
+    expect((await paid(RESOURCE)).status).toBe(200)
+    // max(Retry-After 3000, backoff 500)
+    expect(clock.sleeps).toEqual([3000])
+  })
+
+  test("pending keeps polling past expiresAt until maxWaitMs, then payment_timeout with details", async () => {
     const server = scriptedServer((_attempt, _request, seen) =>
       seen.signature === null
         ? challenge(paymentRequired([pixRequirements()]))
@@ -167,11 +196,68 @@ describe("wrapFetch", () => {
     expect(error.code).toBe("payment_timeout")
     expect(error.details?.chargeId).toBe("pix_char_mock_0001")
     expect(error.details?.paymentSignature).toBe(server.seen[1]?.signature ?? "missing")
-    expect(clock.t).toBeGreaterThan(Date.parse(EXPIRES_AT))
-    expect(clock.t - Date.parse(EXPIRES_AT)).toBeLessThan(10)
+    expect(error.details?.reason).toBe("max_wait")
+    expect(error.message).toBe("gave up waiting for settlement")
+    // A paid charge stays consumable for 24 h: expiresAt (5 min) is not where the client stops.
+    expect(clock.t - START).toBeGreaterThan(600_000)
+    expect(clock.t - START).toBeLessThan(600_010)
     expect(charges).toHaveLength(1)
     expect(paid.spent).toBe(500)
   })
+
+  test("a server-set expiresAt far ahead is capped by retry.maxWaitMs", async () => {
+    const farAway = "2027-11-25T15:00:00.000Z"
+    const server = scriptedServer((_attempt, _request, seen) =>
+      seen.signature === null
+        ? challenge(paymentRequired([pixRequirements({ extra: { expiresAt: farAway } })]))
+        : refused("settlement_pending", "pix_char_mock_0001", "3600"),
+    )
+    const { payer } = countingPayer()
+    const clock = fakeClock()
+    const paid = wrapFetch(server.fetch, {
+      payer,
+      now: clock.now,
+      sleep: clock.sleep,
+      retry: { maxWaitMs: 30_000 },
+    })
+    const error = await caught(paid(RESOURCE))
+    expect(error.code).toBe("payment_timeout")
+    expect(error.details?.reason).toBe("max_wait")
+    expect(error.message).toBe("gave up waiting for settlement")
+    expect(clock.t - START).toBeGreaterThan(30_000)
+    expect(clock.t - START).toBeLessThan(30_010)
+  })
+
+  test.each([
+    [
+      "followed redirect",
+      () => {
+        const r = new Response("ok", { status: 200 })
+        Object.defineProperty(r, "redirected", { value: true })
+        return r
+      },
+    ],
+    [
+      "held-back redirect",
+      () =>
+        new Response(null, { status: 302, headers: { location: "https://evil.example.net/x" } }),
+    ],
+  ])(
+    "a paid retry that is redirected is refused (%s), signature in details",
+    async (_name, make) => {
+      const server = scriptedServer((_attempt, request, seen) => {
+        if (seen.signature === null) return challenge(paymentRequired([pixRequirements()]))
+        expect(request.redirect).toBe("manual")
+        return make()
+      })
+      const { payer, charges } = countingPayer()
+      const error = await caught(wrapFetch(server.fetch, { payer })(RESOURCE))
+      expect(error.code).toBe("policy_exceeded")
+      expect(error.details?.reason).toBe("redirected")
+      expect(error.details?.paymentSignature).toBe(server.seen[1]?.signature ?? "missing")
+      expect(charges).toHaveLength(1)
+    },
+  )
 
   test("policy refuses over maxPerRequest without paying or retrying", async () => {
     const server = simplePaywall(pixRequirements({ amount: "1500" }))
@@ -197,6 +283,49 @@ describe("wrapFetch", () => {
     expect(charges).toHaveLength(1)
     expect(server.seen.length - before).toBe(1)
     expect(paid.spent).toBe(500)
+  })
+
+  test("an amount equal to the default maxPerRequest is paid", async () => {
+    const server = simplePaywall(pixRequirements({ amount: "1000" }))
+    const { payer, charges } = countingPayer()
+    const paid = wrapFetch(server.fetch, { payer })
+    expect((await paid(RESOURCE)).status).toBe(200)
+    expect(charges).toHaveLength(1)
+    expect(paid.spent).toBe(1000)
+  })
+
+  test("maxTotal is inclusive: two 500 charges fill 1000, a third is refused", async () => {
+    const server = scriptedServer((attempt, _r, seen) =>
+      seen.signature === null
+        ? challenge(paymentRequired([pixRequirements({ chargeId: `pix_char_${attempt}` })]))
+        : new Response("ok"),
+    )
+    const { payer, charges } = countingPayer()
+    const paid = wrapFetch(server.fetch, { payer, policy: { maxTotal: 1000 } })
+    expect((await paid(RESOURCE)).status).toBe(200)
+    expect((await paid(RESOURCE)).status).toBe(200)
+    expect(paid.spent).toBe(1000)
+    const error = await caught(paid(RESOURCE))
+    expect(error.code).toBe("policy_exceeded")
+    expect(error.details?.reason).toBe("max_total")
+    expect(new Set(charges.map((c) => c.chargeId)).size).toBe(2)
+    expect(paid.spent).toBe(1000)
+  })
+
+  test("an onPayment hook that throws does not lose the paid request", async () => {
+    const server = simplePaywall()
+    const { payer, charges } = countingPayer()
+    const paid = wrapFetch(server.fetch, {
+      payer,
+      onPayment: () => {
+        throw new Error("logger down")
+      },
+    })
+    const response = await paid(RESOURCE)
+    expect(response.status).toBe(200)
+    expect(charges).toHaveLength(1)
+    expect(paid.spent).toBe(500)
+    expect(server.seen[1]?.signature).not.toBeNull()
   })
 
   test("origin not in allowedOrigins is refused (full origin or bare host)", async () => {
@@ -257,6 +386,34 @@ describe("wrapFetch", () => {
     expect(charges).toHaveLength(0)
     expect(server.seen).toHaveLength(1)
     expect(paid.spent).toBe(0)
+  })
+
+  test("a dynamic BR Code is refused unless the payer checks the resolved amount", async () => {
+    // Tag 54 says 5.00, but a bank pays what the location payload says.
+    const dynamic = encodeEmv([
+      { id: "00", value: "01" },
+      {
+        id: "26",
+        value: encodeTlv([
+          { id: "00", value: "br.gov.bcb.pix" },
+          { id: "25", value: "pix.example.com/qr/v2/cob/abc" },
+        ]),
+      },
+      { id: "53", value: "986" },
+      { id: "54", value: "5.00" },
+      { id: "58", value: "BR" },
+    ])
+    const server = simplePaywall(pixRequirements({ extra: { brCode: dynamic } }))
+    const { payer, charges } = countingPayer()
+    const error = await caught(wrapFetch(server.fetch, { payer })(RESOURCE))
+    expect(error.code).toBe("invalid_payment_requirements")
+    expect(error.details?.reason).toBe("brcode_dynamic_unverified")
+    expect(charges).toHaveLength(0)
+
+    const checking = { checksDynamicAmount: true, pay: payer.pay }
+    const response = await wrapFetch(server.fetch, { payer: checking })(RESOURCE)
+    expect(response.status).toBe(200)
+    expect(charges).toHaveLength(1)
   })
 
   test("a payer that never pays the BR Code (simulate) skips the BR Code check, not the policy", async () => {
@@ -342,6 +499,19 @@ describe("wrapFetch", () => {
     )
     const bare = await caught(wrapFetch(noHeader.fetch, { payer })(RESOURCE))
     expect(bare.code).toBe("payment_rejected")
+
+    // An undecodable PAYMENT-RESPONSE after paying still keeps what is needed to resume.
+    for (const header of ["%%%", btoa(JSON.stringify({ foo: 1 }))]) {
+      const garbled = scriptedServer((_a, _r, seen) =>
+        seen.signature === null
+          ? challenge(paymentRequired([pixRequirements()]))
+          : new Response("", { status: 402, headers: { "PAYMENT-RESPONSE": header } }),
+      )
+      const error = await caught(wrapFetch(garbled.fetch, { payer })(RESOURCE))
+      expect(error.code).toBe("payment_rejected")
+      expect(error.details?.chargeId).toBe("pix_char_mock_0001")
+      expect(typeof error.details?.paymentSignature).toBe("string")
+    }
   })
 
   test("POST body is resent intact on every attempt", async () => {
@@ -394,18 +564,35 @@ describe("wrapFetch", () => {
     expect(paid.spent).toBe(0)
     expect(server.seen.map((s) => s.signature)).toEqual([signature, signature])
 
-    // past expiry: tried once, then timeout
-    const late = scriptedServer(() => refused("settlement_pending", "pix_char_mock_0001"))
+    // past expiry: a paid charge is still consumable (24 h grace), so a pending answer is
+    // transient and resume keeps polling
+    const late = scriptedServer((attempt) =>
+      attempt === 0 ? refused("settlement_pending", "pix_char_mock_0001", "2") : new Response("ok"),
+    )
     const lateClock = fakeClock(Date.parse(EXPIRES_AT) + 60_000)
+    const lateResponse = await wrapFetch(late.fetch, {
+      payer,
+      now: lateClock.now,
+      sleep: lateClock.sleep,
+    })(RESOURCE, { headers: { "PAYMENT-SIGNATURE": signature } })
+    expect(lateResponse.status).toBe(200)
+    expect(late.seen.map((s) => s.signature)).toEqual([signature, signature])
+    expect(lateClock.sleeps).toEqual([2000])
+
+    // still pending after maxWaitMs: timeout with the signature to resume later
+    const stuck = scriptedServer(() => refused("settlement_pending", "pix_char_mock_0001"))
+    const stuckClock = fakeClock(Date.parse(EXPIRES_AT) + 60_000)
     const error = await caught(
-      wrapFetch(late.fetch, { payer, now: lateClock.now, sleep: lateClock.sleep })(RESOURCE, {
-        headers: { "PAYMENT-SIGNATURE": signature },
-      }),
+      wrapFetch(stuck.fetch, {
+        payer,
+        now: stuckClock.now,
+        sleep: stuckClock.sleep,
+        retry: { maxWaitMs: 5_000 },
+      })(RESOURCE, { headers: { "PAYMENT-SIGNATURE": signature } }),
     )
     expect(error.code).toBe("payment_timeout")
     expect(error.details?.paymentSignature).toBe(signature)
-    expect(late.seen).toHaveLength(1)
-    expect(lateClock.sleeps).toEqual([])
+    expect(error.details?.reason).toBe("max_wait")
     expect(charges).toHaveLength(0)
 
     // other refusal on resume -> typed error, still no payment
@@ -417,6 +604,81 @@ describe("wrapFetch", () => {
     )
     expect(error2.code).toBe("charge_already_consumed")
     expect(charges).toHaveLength(0)
+  })
+
+  test("resume never sends a Pix signature to another origin or outside allowedOrigins", async () => {
+    const first = simplePaywall()
+    const events: PaymentEvent[] = []
+    await wrapFetch(first.fetch, {
+      payer: countingPayer().payer,
+      onPayment: (e) => events.push(e),
+    })(RESOURCE)
+    const signature = events[0]?.paymentSignature ?? ""
+    const headers = { "PAYMENT-SIGNATURE": signature }
+
+    const server = scriptedServer(() => new Response("ok"))
+    const { payer } = countingPayer()
+    const elsewhere = await caught(
+      wrapFetch(server.fetch, { payer })("https://evil.example.net/relatorio", { headers }),
+    )
+    expect(elsewhere.code).toBe("policy_exceeded")
+    expect(elsewhere.details?.reason).toBe("resource_origin_mismatch")
+
+    const blocked = await caught(
+      wrapFetch(server.fetch, { payer, policy: { allowedOrigins: ["other.example.com"] } })(
+        RESOURCE,
+        { headers },
+      ),
+    )
+    expect(blocked.details?.reason).toBe("origin_not_allowed")
+    expect(server.seen).toHaveLength(0)
+
+    const ok = await wrapFetch(server.fetch, { payer })(RESOURCE, { headers })
+    expect(ok.status).toBe(200)
+  })
+
+  test("resume with a non-Pix PAYMENT-SIGNATURE sends it once and never pays", async () => {
+    const exact = encodePaymentPayload({
+      x402Version: 2,
+      accepted: {
+        scheme: "exact",
+        network: "eip155:8453",
+        asset: "USDC",
+        amount: "1000",
+        payTo: "0x0000000000000000000000000000000000000001",
+        maxTimeoutSeconds: 60,
+      },
+      payload: { signature: "0x" },
+    })
+    for (const signature of ["garbage", exact]) {
+      const pending = scriptedServer(() => refused("settlement_pending", "pix_char_mock_0001", "2"))
+      const { payer, charges } = countingPayer()
+      const clock = fakeClock()
+      const options = { payer, now: clock.now, sleep: clock.sleep }
+      const error = await caught(
+        wrapFetch(pending.fetch, options)(RESOURCE, {
+          headers: { "PAYMENT-SIGNATURE": signature },
+        }),
+      )
+      // No Pix expiry to wait for: one attempt, then payment_timeout.
+      expect(error.code).toBe("payment_timeout")
+      expect(error.details?.reason).toBe("single_attempt")
+      expect(error.details?.paymentSignature).toBe(signature)
+      expect(pending.seen.map((s) => s.signature)).toEqual([signature])
+      expect(clock.sleeps).toEqual([])
+      expect(charges).toHaveLength(0)
+
+      const reply = new Response("ok", { status: 200 })
+      const ok = scriptedServer(() => reply)
+      const response = await wrapFetch(ok.fetch, options)(RESOURCE, {
+        headers: { "PAYMENT-SIGNATURE": signature },
+      })
+      expect(response).toBe(reply)
+      expect(await response.text()).toBe("ok")
+      expect(ok.seen.map((s) => s.signature)).toEqual([signature])
+      expect(clock.sleeps).toEqual([])
+      expect(charges).toHaveLength(0)
+    }
   })
 
   test("backoff grows by factor and is capped at maxDelayMs", async () => {
@@ -436,7 +698,7 @@ describe("wrapFetch", () => {
     expect(clock.sleeps).toEqual([500, 1000, 1500, 1500])
   })
 
-  test("a huge Retry-After never sleeps far past expiresAt", async () => {
+  test("a huge Retry-After never sleeps far past maxWaitMs", async () => {
     const server = scriptedServer((_attempt, _request, seen) =>
       seen.signature === null
         ? challenge(paymentRequired([pixRequirements()]))
@@ -450,8 +712,8 @@ describe("wrapFetch", () => {
     })
     const error = await caught(paid(RESOURCE))
     expect(error.code).toBe("payment_timeout")
-    // one capped sleep to just past the deadline, one last try, then timeout
-    expect(clock.sleeps).toEqual([Date.parse(EXPIRES_AT) - START + 1])
+    // one capped sleep to just past the cap, one last try, then timeout
+    expect(clock.sleeps).toEqual([600_000 + 1])
     expect(server.seen).toHaveLength(3)
   })
 

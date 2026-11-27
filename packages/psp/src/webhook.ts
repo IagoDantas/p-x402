@@ -1,4 +1,4 @@
-import { Px402Error, timingSafeEqual } from "@p-x402/core"
+import { bytesToBase64, Px402Error, timingSafeEqual } from "@p-x402/core"
 import { z } from "zod"
 import type { PixWebhookEvent, PixWebhookKind } from "./types"
 
@@ -22,12 +22,12 @@ export async function signAbacatePayWebhook(rawBody: string): Promise<string> {
     false,
     ["sign"],
   )
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, textEncoder.encode(rawBody)))
-  let binary = ""
-  for (const byte of mac) binary += String.fromCharCode(byte)
-  return btoa(binary)
+  return bytesToBase64(
+    new Uint8Array(await crypto.subtle.sign("HMAC", key, textEncoder.encode(rawBody))),
+  )
 }
-/** Webhook bodies above this size are refused unread. */
+
+/** Webhook bodies above this size (in UTF-8 bytes) are refused. */
 export const MAX_WEBHOOK_BYTES = 64 * 1024
 
 const EVENT_KINDS: Record<string, PixWebhookKind> = {
@@ -36,12 +36,13 @@ const EVENT_KINDS: Record<string, PixWebhookKind> = {
   "transparent.refunded": "refunded",
 }
 
-/** AbacatePay v2 envelope. Only the fields p-x402 reads are declared; the rest (customer, payerInformation) is dropped. */
+/**
+ * AbacatePay v2 envelope. Only the fields p-x402 reads are declared; zod strips the rest
+ * (customer, payerInformation), so payer data never leaves this function.
+ */
 const EnvelopeSchema = z.object({
   id: z.string().min(1).max(256),
   event: z.string().min(1).max(128),
-  apiVersion: z.union([z.number(), z.string()]).optional(),
-  devMode: z.boolean().optional(),
   data: z
     .object({
       transparent: z.object({ id: z.string().min(1).max(128) }).optional(),
@@ -69,7 +70,7 @@ export async function parseAbacatePayWebhook(
     throw new Px402Error("invalid_webhook_payload", "webhook body is too large")
   }
   const text = await request.text()
-  if (text.length > MAX_WEBHOOK_BYTES) {
+  if (textEncoder.encode(text).byteLength > MAX_WEBHOOK_BYTES) {
     throw new Px402Error("invalid_webhook_payload", "webhook body is too large")
   }
   const signature = request.headers.get(WEBHOOK_SIGNATURE_HEADER) ?? ""
@@ -87,7 +88,10 @@ export async function parseAbacatePayWebhook(
     throw new Px402Error("invalid_webhook_payload", "webhook envelope has an unexpected shape")
   }
   const envelope = parsed.data
-  const kind = EVENT_KINDS[envelope.event] ?? "other"
+  // hasOwn: an event named "constructor" or "toString" must not resolve to a prototype member.
+  const kind = Object.hasOwn(EVENT_KINDS, envelope.event)
+    ? (EVENT_KINDS[envelope.event] ?? "other")
+    : "other"
   const chargeId = envelope.data?.transparent?.id
   if (kind !== "other" && chargeId === undefined) {
     throw new Px402Error("invalid_webhook_payload", `${envelope.event} without data.transparent.id`)
