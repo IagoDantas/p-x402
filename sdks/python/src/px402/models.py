@@ -392,6 +392,20 @@ class PixExtra:
             expires_at=_datetime(_require(obj, "expiresAt", path), _join(path, "expiresAt")),
         )
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Keys in the order the Zod schema outputs them (unknown keys dropped, default filled)."""
+        out: Dict[str, Any] = {
+            "paymentFlow": self.payment_flow,
+            "assetTransferMethod": self.asset_transfer_method,
+            "provider": self.provider,
+            "resourceUrl": self.resource_url,
+            "chargeId": self.charge_id,
+            "brCode": self.br_code,
+        }
+        _put(out, "brCodeBase64", self.br_code_base64)
+        out["expiresAt"] = self.expires_at
+        return out
+
 
 @dataclass
 class PixPaymentRequirements:
@@ -405,6 +419,18 @@ class PixPaymentRequirements:
     scheme: str = PIX_SCHEME
     network: str = PIX_NETWORK
     asset: str = PIX_ASSET
+
+    def to_dict(self) -> Dict[str, Any]:
+        """The parsed Pix requirements in Zod output order (``raw`` keeps what arrived)."""
+        return {
+            "scheme": self.scheme,
+            "network": self.network,
+            "amount": self.amount,
+            "asset": self.asset,
+            "payTo": self.pay_to,
+            "maxTimeoutSeconds": self.max_timeout_seconds,
+            "extra": self.extra.to_dict(),
+        }
 
 
 def parse_pix_requirements(value: Any, path: str = "") -> PixPaymentRequirements:

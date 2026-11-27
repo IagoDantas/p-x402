@@ -1,0 +1,13 @@
+{
+  "name": "@p-x402/interop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run.ts"
+  },
+  "dependencies": {
+    "@p-x402/client": "workspace:*",
+    "@p-x402/core": "workspace:*"
+  }
+}

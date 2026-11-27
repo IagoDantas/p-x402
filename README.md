@@ -389,10 +389,11 @@ HttpClient http = Px402Client.wrap(HttpClient.newHttpClient(), payer, Policy.max
 **Python (FastAPI e agentes):**
 
 ```python
-pix = Px402(facilitator="https://facilitator.exemplo.com", token=os.environ["PX402_TOKEN"])
+pix = PixPaywall("https://facilitator.exemplo.com", token=os.environ["PX402_TOKEN"])
+pix.install(app)
 
-@app.get("/relatorio", dependencies=[Depends(pix.paywall(amount=500))])
-def relatorio(): ...
+@app.get("/relatorio", dependencies=[Depends(pix.require(amount=500))])
+async def relatorio(): ...
 
 # cliente: transport do httpx (já existe, veja SDK Python abaixo)
 client = httpx.Client(transport=px402.Px402Transport(px402.TerminalPayer(), policy=px402.SpendingPolicy(max_per_request=1000)))
@@ -430,7 +431,10 @@ Cada SDK tem a própria versão semver e declara duas compatibilidades: a versã
 
 ## SDK Python
 
-O cliente Python está em [`sdks/python`](sdks/python/README.md) (pacote `p-x402`, import `px402`, Python 3.9+, só depende do `httpx`). Ele faz o mesmo que o `wrapFetch`: recebe o 402, aplica a policy de gasto (ligada por padrão: R$ 10,00 por requisição e R$ 50,00 no total), chama o pagador e refaz a requisição com `PAYMENT-SIGNATURE`. Tem transport síncrono e assíncrono do `httpx`, o `SimulatePayer` para desenvolvimento e o `TerminalPayer`, que mostra o Pix copia e cola e espera a pessoa pagar. O lado do servidor em Python ainda não existe.
+O SDK Python está em [`sdks/python`](sdks/python/README.md) (pacote `p-x402`, import `px402`, Python 3.9+, só depende do `httpx`; o adapter FastAPI é um extra opcional) e cobre os dois lados:
+
+- **Cliente:** faz o mesmo que o `wrapFetch`: recebe o 402, aplica a policy de gasto (ligada por padrão: R$ 10,00 por requisição e R$ 50,00 no total), chama o pagador e refaz a requisição com `PAYMENT-SIGNATURE`. Tem transport síncrono e assíncrono do `httpx`, o `SimulatePayer` para desenvolvimento e o `TerminalPayer`, que mostra o Pix copia e cola e espera a pessoa pagar.
+- **Servidor (`px402.server`):** o paywall do `@p-x402/server` em Python, sem framework, mais um adapter para FastAPI/Starlette. Fala com o facilitator TypeScript por HTTP (`/pix/charges`, `/verify`, `/settle`) com o token da loja; não guarda chave de PSP nem banco.
 
 ```python
 import px402
@@ -439,10 +443,39 @@ with px402.Px402Client(px402.SimulatePayer("http://localhost:4020")) as client:
     print(client.get("http://localhost:4021/relatorio").json())
 ```
 
-Os testes rodam todos os casos de [`spec/test-vectors/`](spec/test-vectors/README.md):
+```python
+from fastapi import Depends, FastAPI
+from px402.server.fastapi import Payment, PixPaywall
+
+app = FastAPI()
+pix = PixPaywall("http://localhost:4020", token="tok-local")
+pix.install(app)
+
+@app.get("/relatorio")
+async def relatorio(pagamento: Payment = Depends(pix.require(amount=500))):
+    return {"pagoCom": pagamento.charge_id}
+```
+
+Os testes rodam todos os casos de [`spec/test-vectors/`](spec/test-vectors/README.md), inclusive as transcrições do paywall (`paywall-transcripts.json`), que valem para servidores em qualquer linguagem:
 
 ```bash
 bun run test:python
+```
+
+### Interoperabilidade
+
+Cliente e servidor podem estar em linguagens diferentes; o facilitator é sempre o TypeScript:
+
+| Cliente | API paga | Facilitator |
+|---|---|---|
+| Python | TypeScript | TypeScript (PSP mock) |
+| TypeScript (`wrapFetch`) | Python (FastAPI) | TypeScript (PSP mock) |
+| Python | Python (FastAPI) | TypeScript (PSP mock) |
+
+Um comando sobe o facilitator e as duas APIs em portas livres, faz uma compra em cada combinação, imprime cada passo e falha se alguma der errado:
+
+```bash
+bun run interop
 ```
 
 ---
@@ -463,7 +496,9 @@ p-x402/
 │   ├── demo-server/   API de exemplo com GET /relatorio a R$ 5,00
 │   └── demo-client/   comprador de exemplo e a demo tudo-em-um (bun run demo:local)
 ├── sdks/
-│   └── python/        cliente Python (httpx, policy de gasto, SimulatePayer, TerminalPayer)
+│   └── python/        SDK Python: cliente (httpx, policy de gasto, pagadores) e servidor (paywall, FastAPI)
+├── examples/
+│   └── interop/       bun run interop: clientes e APIs em Python e TypeScript contra o mesmo facilitator
 ├── spec/
 │   └── test-vectors/  vetores de teste do protocolo para SDKs em outras linguagens (bun run vectors)
 └── docs/
