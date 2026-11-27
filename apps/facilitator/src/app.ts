@@ -348,9 +348,16 @@ export function createFacilitator(options: FacilitatorOptions): Hono {
       return failure(result.reason, result.chargeId, result.status)
     }
     if (!(await store.consume(result.chargeId, now(), key))) {
-      // Lost the race; it may have been to an earlier attempt with this same key.
+      // Lost the race (maybe to an earlier attempt with this same key), or a webhook recorded a
+      // dispute or refund while we were asking the PSP.
       const current = await store.get(result.chargeId)
       if (isReplay(current)) return success(result.chargeId, result.record.amount)
+      if (current?.consumedAt == null && current?.refundedAt != null) {
+        return failure("charge_refunded", result.chargeId)
+      }
+      if (current?.consumedAt == null && current?.disputedAt != null) {
+        return failure("charge_disputed", result.chargeId)
+      }
       return failure("charge_already_consumed", result.chargeId)
     }
     return success(result.chargeId, result.record.amount)

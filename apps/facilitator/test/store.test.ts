@@ -82,6 +82,18 @@ for (const [name, make] of backends) {
       expect(await store.consume("missing", 1)).toBe(false)
     })
 
+    test("consume refuses a disputed or refunded charge", async () => {
+      const store = make()
+      await store.insert(record("d"))
+      await store.insert(record("r"))
+      await store.markDisputed("d", 5)
+      await store.markRefunded("r", 5)
+      expect(await store.consume("d", 10)).toBe(false)
+      expect(await store.consume("r", 10)).toBe(false)
+      expect((await store.get("d"))?.consumedAt).toBeNull()
+      expect((await store.get("r"))?.consumedAt).toBeNull()
+    })
+
     test("consume stores the idempotency key atomically with consumedAt", async () => {
       const store = make()
       await store.insert(record("c1"))

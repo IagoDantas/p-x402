@@ -806,6 +806,45 @@ for (const [storeName, makeStore] of backends) {
       })
     }
 
+    test("past expiresAt + grace the PSP is not asked at all", async () => {
+      const f = setup(makeStore)
+      const req = await f.charge()
+      await f.mock.simulatePayment(req.extra.chargeId)
+      f.advance(300_000 + 86_400_000 + 1)
+      const calls = f.mock.calls.getCharge
+      for (let i = 0; i < 5; i++) {
+        expect((await f.verify(f.body(req))).json.invalidReason).toBe("charge_expired")
+        expect((await f.settle(f.body(req))).json.errorReason).toBe("charge_expired")
+      }
+      expect(f.mock.calls.getCharge).toBe(calls)
+    })
+
+    for (const kind of ["dispute", "refund"] as const) {
+      test(`a ${kind} recorded while settle waits on the PSP stops the consume`, async () => {
+        const mock = createMockPixProvider({ now: () => T0 })
+        let store: ChargeStore | undefined
+        const racing = wrapProvider(mock, {
+          async getCharge(id) {
+            const state = await mock.getCharge(id)
+            // A webhook lands between runChecks' flag check and consume.
+            if (kind === "dispute") await store?.markDisputed(id, T0)
+            else await store?.markRefunded(id, T0)
+            return state
+          },
+        })
+        const f = setup(makeStore, { provider: racing })
+        store = f.store
+        const req = await f.charge()
+        await mock.simulatePayment(req.extra.chargeId)
+        const result = await f.settle(f.body(req))
+        expect(result.json.success).toBe(false)
+        expect(result.json.errorReason).toBe(
+          kind === "dispute" ? "charge_disputed" : "charge_refunded",
+        )
+        expect((await f.store.get(req.extra.chargeId))?.consumedAt).toBeNull()
+      })
+    }
+
     test("refunded at the PSP → charge_refunded and recorded by settle", async () => {
       const f = setup(makeStore)
       const req = await f.charge()
