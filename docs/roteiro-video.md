@@ -8,7 +8,7 @@
 
 _Tela: só a pessoa falando. Em "x402", aparecem os logos dos apoiadores ou o texto "x402 · Linux Foundation"._
 
-> "Na era da IA, elas escrevem código, pesquisam e tomam decisões, mas travam em um simples formulário de cadastro.
+> "Era da IA, elas escrevem código, pesquisam e tomam decisões, mas travam em um simples formulário de cadastro.
 > Pra resolver isso, Google, Visa, Mastercard e a Linux Foundation se juntaram num padrão: o x402, que deixa agentes de IA pagarem direto pela internet.
 > Só que em cripto.
 > Mas e o Pix? E o Brasil?"
@@ -21,15 +21,15 @@ _Tela: os números aparecem em destaque conforme a fala._
 > Só em 2026, até outubro, foram **76 bilhões de transações**. E nos 3 minutos deste vídeo, **cerca de 500 mil Pix** vão ser feitos no Brasil.
 > Mesmo assim, o padrão mundial de pagamento entre máquinas não fala Pix.
 > Hoje, para uma IA comprar um único dado de uma API brasileira, ela precisa de conta, cartão e chave de acesso, coisas que só um humano consegue criar.
-> E para quem quer vender por centavos, o custo de cadastro e de cobrança simplesmente não fecha."
+> Ou seja: o Brasil tem o pagamento mais usado do país, e as máquinas não podem usar."
 
 ## 3. Solução e como faremos · 1:05–2:25 · Iago
 
 _Tela: diagrama simples: Pix de R$ 30 → saldo → IA usa APIs → cada chamada desconta do saldo._
 
-> "Por isso criamos o **p-x402**, trocando a cripto pelo Pix.
+> "Por isso estamos criando o **p-x402**, trocando a cripto pelo Pix.
 > Funciona assim: você faz um Pix de, por exemplo, 30 reais, e esse valor vira saldo para a sua IA.
-> A partir daí, ela trabalha sozinha. Quando precisa de um dado ou de um serviço pago, a API responde com o preço, e a IA paga direto desse saldo, em centavos, e, se você quiser, sem precisar te pedir nada.
+> A partir daí, ela trabalha sozinha. Quando precisa de um dado ou de um serviço pago, a API responde com o preço, e a IA paga direto desse saldo, e, se você quiser, sem precisar te pedir nada.
 > Não tem cadastro nem chave de acesso em cada API, e não tem cartão. Você define um teto, acompanha o gasto e recebe um recibo de cada chamada.
 > E isso também resolve o lado de quem vende: fazer um Pix por chamada de poucos centavos não compensa por causa da tarifa. Com o saldo, um Pix só paga centenas de chamadas.
 > Vamos entregar um protocolo aberto, um kit para quem vende integrar na própria API e um cliente que paga sozinho."
@@ -59,4 +59,4 @@ _Tela final:_ **p-x402.com** · **github.com/IagoDantas/p-x402**
 
 - Não chamar o produto de "Pix". O certo é "p-x402, que usa Pix" (a marca é do BCB).
 - Os três precisam aparecer na câmera (requisito do rascunho).
-- Se passar de 3 min, cortem primeiro a última frase do problema ("custo de cadastro...").
+- Se passar de 3 min, cortem primeiro a frase sobre a tarifa na solução ("E isso também resolve o lado de quem vende...").
