@@ -78,6 +78,15 @@
         "hono": "^4.13.0",
       },
     },
+    "spec/test-vectors": {
+      "name": "@p-x402/test-vectors",
+      "version": "0.0.0",
+      "dependencies": {
+        "@p-x402/client": "workspace:*",
+        "@p-x402/core": "workspace:*",
+        "@p-x402/server": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@biomejs/biome": ["@biomejs/biome@2.6.9", "", { "optionalDependencies": { "@biomejs/cli-android-arm64": "2.6.9", "@biomejs/cli-android-x64": "2.6.9", "@biomejs/cli-darwin-arm64": "2.6.9", "@biomejs/cli-darwin-x64": "2.6.9", "@biomejs/cli-linux-arm64": "2.6.9", "@biomejs/cli-linux-arm64-musl": "2.6.9", "@biomejs/cli-linux-x64": "2.6.9", "@biomejs/cli-linux-x64-musl": "2.6.9", "@biomejs/cli-win32-arm64": "2.6.9", "@biomejs/cli-win32-x64": "2.6.9" }, "bin": { "biome": "bin/biome" } }, "sha512-RelCBDzTXu4DBU8c35P4iMrDO80SUjW0OgjDA7CT1z3UcCU5IclWTZ2XnMelI4frQL//xg2K2BQxAhcOKxdPQA=="],
@@ -247,6 +256,8 @@
     "@p-x402/psp": ["@p-x402/psp@workspace:packages/psp"],
 
     "@p-x402/server": ["@p-x402/server@workspace:packages/server"],
+
+    "@p-x402/test-vectors": ["@p-x402/test-vectors@workspace:spec/test-vectors"],
 
     "@poppinss/colors": ["@poppinss/colors@4.1.6", "", { "dependencies": { "kleur": "^4.1.5" } }, "sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg=="],
 

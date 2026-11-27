@@ -4,13 +4,15 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "spec/test-vectors"
   ],
   "scripts": {
     "dev:facilitator": "bun --watch apps/facilitator/src/index.ts",
     "dev:server": "bun --watch apps/demo-server/src/index.ts",
     "demo": "bun apps/demo-client/src/index.ts",
     "demo:local": "bun apps/demo-client/src/all-in-one.ts",
+    "vectors": "bun spec/test-vectors/generate.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.lib.json",
     "lint": "biome check .",
