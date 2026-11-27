@@ -25,13 +25,13 @@ export interface MockPixProviderOptions {
   onWebhook?: (request: Request) => Promise<unknown>
 }
 
-interface MockCharge {
+/** Snapshot of a mock charge, as returned by `peek`. */
+export interface MockCharge {
   id: string
   amount: number
   status: PixChargeStatus
   expiresAt: number
   externalId: string
-  description: string | undefined
   paidAt: number | undefined
 }
 
@@ -55,8 +55,8 @@ export interface MockPixProvider extends PixProvider {
     options?: { secret?: string; envelopeId?: string; signature?: string },
   ): Promise<Request>
   setWebhookSink(sink: ((request: Request) => Promise<unknown>) | undefined): void
-  /** Inspect internal state in tests. */
-  peek(id: string): Readonly<MockCharge> | undefined
+  /** Copy of the internal state, for tests. */
+  peek(id: string): MockCharge | undefined
   readonly calls: { createCharge: number; getCharge: number }
 }
 
@@ -64,7 +64,9 @@ export interface MockPixProvider extends PixProvider {
 export function createMockPixProvider(options: MockPixProviderOptions = {}): MockPixProvider {
   const now = options.now ?? Date.now
   const secret = options.webhookSecret ?? "mock-webhook-secret"
-  if (secret.trim().length === 0) throw new Error("mock: webhookSecret must not be empty")
+  if (secret.trim().length === 0) {
+    throw new Px402Error("invalid_request", "mock: webhookSecret must not be empty")
+  }
   const prefix = options.idPrefix ?? "pix_char_mock_"
   const charges = new Map<string, MockCharge>()
   let sink = options.onWebhook
@@ -152,7 +154,6 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
         status: "PENDING",
         expiresAt: now() + input.expiresIn * 1000,
         externalId: input.externalId,
-        description: input.description,
         paidAt: undefined,
       }
       charges.set(id, charge)
@@ -194,7 +195,10 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
     setWebhookSink(next) {
       sink = next
     },
-    peek: (id) => charges.get(id),
+    peek: (id) => {
+      const charge = charges.get(id)
+      return charge ? { ...charge } : undefined
+    },
   }
 }
 
