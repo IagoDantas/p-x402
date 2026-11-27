@@ -298,6 +298,20 @@ describe("rate limits", () => {
 })
 
 describe("request and facilitator edge cases", () => {
+  test("a request URL too long for a resource URL → 414, no facilitator call, IP cap untouched", async () => {
+    const { stub, paywall } = setup({ ipRateLimit: { limit: 1, windowMs: 60_000 } })
+    const long = `${URL_RELATORIO}?q=${"x".repeat(2100)}`
+    const res = response(await paywall.handle(new Request(long), route, { clientIp: "1.2.3.4" }))
+    expect(res.status).toBe(414)
+    expect(await res.json()).toEqual({ error: "invalid_request" })
+    expect(stub.calls).toHaveLength(0)
+    // The single slot of the IP cap is still free.
+    const ok = response(
+      await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }),
+    )
+    expect(ok.status).toBe(402)
+  })
+
   test("a facilitator redirect is never followed with the merchant token", async () => {
     const stub = stubFacilitator()
     const modes: RequestRedirect[] = []

@@ -449,6 +449,11 @@ export function createPaywall(config: PaywallConfig): Paywall {
       return { type: "response", response: jsonResponse(402, errorBody("method_not_payable")) }
     }
     const resourceUrl = resourceUrlFor(request, route)
+    // The facilitator refuses resource URLs it cannot store: answer that here, before the IP cap
+    // or any facilitator call, instead of a 500 that blames the merchant's config.
+    if (!HttpUrlSchema.safeParse(resourceUrl).success) {
+      return { type: "response", response: jsonResponse(414, errorBody("invalid_request")) }
+    }
     const resource: ResourceInfo = {
       url: resourceUrl,
       ...(route.description !== undefined ? { description: route.description } : {}),
