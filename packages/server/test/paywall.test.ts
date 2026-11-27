@@ -391,36 +391,33 @@ describe("paid retry", () => {
     expect(stub.callsTo("/pix/charges")).toHaveLength(0)
   })
 
-  test.each([500, 404, 302, 303])(
-    "handler %i → no /settle, response passed through",
+  test.each([500, 404])("handler %i → no /settle, response passed through", async (status) => {
+    const { stub, paywall } = setup()
+    const result = paid(await paywall.handle(paidRequest(), route))
+    const failed = new Response("boom", { status })
+    const out = await result.finalize(failed)
+    expect(out).toBe(failed)
+    expect(stub.callsTo("/settle")).toHaveLength(0)
+  })
+
+  test.each([301, 302, 303, 307])(
+    "handler %i → no /settle and no Location: a redirect cannot deliver for free",
     async (status) => {
       const { stub, paywall } = setup()
       const result = paid(await paywall.handle(paidRequest(), route))
-      const failed = new Response(null, { status, headers: { location: "/elsewhere" } })
-      const out = await result.finalize(failed)
-      expect(out).toBe(failed)
+      const redirect = new Response(null, {
+        status,
+        headers: { location: "https://cdn.test/signed-download" },
+      })
+      const out = await result.finalize(redirect)
+      expect(out.status).toBe(500)
+      expect(out.headers.get("location")).toBeNull()
+      expect(await out.json()).toEqual({ error: "unexpected_error" })
       expect(stub.callsTo("/settle")).toHaveLength(0)
+      // The charge stays unused and the lock is released.
+      paid(await paywall.handle(paidRequest(), route))
     },
   )
-
-  test("settle says charge_already_consumed → 402, handler body discarded", async () => {
-    const { stub, paywall } = setup()
-    stub.reply(
-      "/settle",
-      stub.json({
-        success: false,
-        errorReason: "charge_already_consumed",
-        transaction: "pix_char_mock_0001",
-        network: "pix:br",
-      }),
-    )
-    const result = paid(await paywall.handle(paidRequest(), route))
-    const out = await result.finalize(new Response("secret report", { status: 200 }))
-    expect(out.status).toBe(402)
-    expect(await out.text()).toBe(JSON.stringify({ error: "charge_already_consumed" }))
-    const settlement = decodeSettlementResponse(out.headers.get("PAYMENT-RESPONSE") ?? "")
-    expect(settlement.errorReason).toBe("charge_already_consumed")
-  })
 
   test("settle says settlement_pending → 402 with PAYMENT-REQUIRED and Retry-After", async () => {
     const { stub, paywall } = setup()

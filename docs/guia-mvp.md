@@ -65,7 +65,7 @@ Por que essa ordem (verificar, rodar o handler, liquidar):
 
 - **`/verify` não grava nada.** Ele confere tudo, inclusive o status no PSP, mas não marca a cobrança.
 - **O handler roda antes de a cobrança ser consumida.** Se o handler falhar (erro 500, por exemplo), a cobrança continua paga e não usada, e o cliente pode repetir com o mesmo `chargeId` sem pagar de novo.
-- **`/settle` só roda depois de uma resposta 2xx.** Um erro ou um redirecionamento (3xx) não liquida, porque o cliente nunca segue um redirecionamento depois de pagar. O `/settle` marca a cobrança como usada de forma atômica (`UPDATE ... WHERE consumed_at IS NULL`). Se duas requisições chegarem com a mesma cobrança, só uma ganha.
+- **`/settle` só roda depois de uma resposta 2xx.** Um erro (4xx/5xx) passa direto, sem liquidar. Um redirecionamento (3xx) também não liquida, porque o cliente nunca segue um redirecionamento depois de pagar, e por isso vira um `500` sem o `Location`: senão o mesmo pagamento liberaria o recurso de novo a cada vez. Rotas pagas devem entregar o conteúdo com 2xx. O `/settle` marca a cobrança como usada de forma atômica (`UPDATE ... WHERE consumed_at IS NULL`). Se duas requisições chegarem com a mesma cobrança, só uma ganha.
 
 ### Regras de segurança que o facilitator aplica
 

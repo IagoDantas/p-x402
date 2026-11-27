@@ -84,9 +84,11 @@ export type PaywallResult =
       amount: string
       requirements: PixPaymentRequirements
       /**
-       * Settles after the handler ran. Returns the response to send. Settle happens when the
-       * handler returns its Response: a streamed body that fails later is still settled.
-       * Always releases the chargeId lock.
+       * Settles after the handler ran. Returns the response to send. Only a 2xx is settled: a
+       * 4xx/5xx is returned unchanged and the charge stays paid and unused, and a 3xx is replaced
+       * by a 500 (its Location would deliver the resource without consuming the charge). Settle
+       * happens when the handler returns its Response: a streamed body that fails later is still
+       * settled. Always releases the chargeId lock.
        */
       finalize(response: Response): Promise<Response>
       /**
@@ -531,9 +533,19 @@ export function createPaywall(config: PaywallConfig): Paywall {
       release: lock.release,
       async finalize(response) {
         try {
-          // Only a 2xx delivers the resource. On an error, and on a redirect (the client never
-          // follows one with a payment signature), there is no settle: the paid charge stays unused.
-          if (response.status < 200 || response.status >= 300) return response
+          // Only a 2xx delivers the resource and is settled. An error passes through unsettled:
+          // the paid charge stays unused for a retry.
+          if (response.status >= 400) return response
+          if (response.status < 200 || response.status >= 300) {
+            // A redirect is not settled (the client never follows one with a payment signature),
+            // so its Location must not leak either: it could hand out the resource for free, again
+            // and again, with one unconsumed charge.
+            await response.body?.cancel().catch(() => undefined)
+            console.error(
+              `p-x402: a paid handler answered ${response.status}; only 2xx is delivered and settled`,
+            )
+            return jsonResponse(500, errorBody("unexpected_error"))
+          }
           lock.touch()
           const settled = await verifyOrSettle(
             "/settle",
