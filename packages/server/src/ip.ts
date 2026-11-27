@@ -23,13 +23,18 @@ function expandIpv6(ip: string): string[] | undefined {
 
 /**
  * Rate-limit key for a client IP: IPv4 as is, IPv4-mapped IPv6 as the IPv4 address,
- * other IPv6 addresses by their /64 prefix. Missing or empty → the shared "unknown" bucket.
+ * other IPv6 addresses by their /64 prefix. A port ("1.2.3.4:5678", "[2001:db8::1]:443", as some
+ * proxies send it) is dropped, so a new connection is not a new bucket. Missing or empty → the
+ * shared "unknown" bucket.
  */
 export function clientIpKey(ip: string | undefined): string {
   const raw = ip?.trim().toLowerCase()
   if (!raw) return UNKNOWN_IP_KEY
+  const v4WithPort = /^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/.exec(raw)
+  if (v4WithPort?.[1]) return v4WithPort[1]
   if (!raw.includes(":")) return raw
-  const bare = raw.replace(/^\[|\]$/g, "").replace(/%.*$/, "")
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(raw)
+  const bare = (bracketed?.[1] ?? raw).replace(/%.*$/, "")
   const mapped = /^[0:]*ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(bare)
   if (mapped?.[1]) return mapped[1]
   const groups = expandIpv6(bare)
