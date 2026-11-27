@@ -158,7 +158,7 @@ describe("pixPaywall (Hono)", () => {
       headers: { "PAYMENT-SIGNATURE": paymentSignature(pixRequirements()) },
     })
     expect(res.status).toBe(402)
-    expect(await res.json()).toEqual({})
+    expect(await res.json()).toEqual({ error: "charge_already_consumed" })
   })
   test("handler exception with an onError that answers 200: still no settle", async () => {
     const { app, stub } = setup()

@@ -353,7 +353,8 @@ export function createPaywall(config: PaywallConfig): Paywall {
         "retry-after": String(SETTLEMENT_PENDING_RETRY_AFTER_SECONDS),
       })
     }
-    return jsonResponse(402, {}, { [HEADER_PAYMENT_RESPONSE]: settlement })
+    // A refused charge is not offered again (no PAYMENT-REQUIRED); the body names the reason.
+    return jsonResponse(402, { error: reason }, { [HEADER_PAYMENT_RESPONSE]: settlement })
   }
 
   function badHeader(reason: Px402ErrorCode): Response {

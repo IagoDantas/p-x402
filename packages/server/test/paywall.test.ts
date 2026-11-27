@@ -306,13 +306,13 @@ describe("paid retry", () => {
     expect(stub.callsTo("/pix/charges")).toHaveLength(0)
   })
 
-  test("other verify reason → 402 with PAYMENT-RESPONSE only", async () => {
+  test("other verify reason → 402 with the reason in the body and PAYMENT-RESPONSE, no PAYMENT-REQUIRED", async () => {
     const { stub, paywall } = setup()
     stub.reply("/verify", stub.json({ isValid: false, invalidReason: "charge_expired" }))
     const res = response(await paywall.handle(paidRequest(), route))
     expect(res.status).toBe(402)
     expect(res.headers.get("PAYMENT-REQUIRED")).toBeNull()
-    expect(await res.json()).toEqual({})
+    expect(await res.json()).toEqual({ error: "charge_expired" })
     const settlement = decodeSettlementResponse(res.headers.get("PAYMENT-RESPONSE") ?? "")
     expect(settlement.errorReason).toBe("charge_expired")
     expect(stub.callsTo("/pix/charges")).toHaveLength(0)
@@ -341,7 +341,7 @@ describe("paid retry", () => {
     const result = paid(await paywall.handle(paidRequest(), route))
     const out = await result.finalize(new Response("secret report", { status: 200 }))
     expect(out.status).toBe(402)
-    expect(await out.text()).toBe("{}")
+    expect(await out.text()).toBe(JSON.stringify({ error: "charge_already_consumed" }))
     const settlement = decodeSettlementResponse(out.headers.get("PAYMENT-RESPONSE") ?? "")
     expect(settlement.errorReason).toBe("charge_already_consumed")
   })
