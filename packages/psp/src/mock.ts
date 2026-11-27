@@ -202,7 +202,7 @@ export function createMockPixProvider(options: MockPixProviderOptions = {}): Moc
   }
 }
 
-/** A well-formed dynamic-style BR Code (EMV, tag 54 amount, valid CRC) that no bank will accept. */
+/** A well-formed static BR Code (no location URL; POI 12, tag 54 amount, valid CRC) that no bank will accept. */
 export function mockBrCode(chargeId: string, amountCentavos: number): string {
   const merchantAccount = encodeTlv([
     { id: "00", value: "br.gov.bcb.pix" },

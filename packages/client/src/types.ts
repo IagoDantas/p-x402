@@ -20,7 +20,7 @@ export interface PixPayer {
    */
   readonly paysBrCode?: boolean
   /**
-   * A dynamic BR Code (tag 26 with a location URL) carries its real amount in the payload behind
+   * A dynamic BR Code (its Pix merchant-account template carries a location URL) carries its real amount in the payload behind
    * that URL; the bank pays that amount, not tag 54. The client cannot check it offline, so it
    * refuses dynamic codes unless the payer sets this to true and itself refuses to pay a resolved
    * amount above `amount`. Default false.
