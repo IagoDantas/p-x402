@@ -297,6 +297,34 @@ describe("rate limits", () => {
   )
 })
 
+describe("request and facilitator edge cases", () => {
+  test("a facilitator redirect is never followed with the merchant token", async () => {
+    const stub = stubFacilitator()
+    const modes: RequestRedirect[] = []
+    const paywall = createPaywall({
+      facilitatorUrl: FACILITATOR,
+      token: TOKEN,
+      now: fakeClock().now,
+      fetch: (request) => {
+        modes.push(request.redirect)
+        return stub.fetch(request)
+      },
+    })
+    const redirect = () =>
+      new Response(null, { status: 307, headers: { location: "https://evil.test/verify" } })
+    stub.reply("/pix/charges", redirect)
+    const created = response(
+      await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }),
+    )
+    expect(created.status).toBe(502)
+    stub.reply("/verify", redirect)
+    const verified = response(await paywall.handle(paidRequest(), route))
+    expect(verified.status).toBe(502)
+    expect(modes.length).toBeGreaterThan(0)
+    expect(modes.every((mode) => mode === "manual")).toBe(true)
+  })
+})
+
 describe("facilitator errors on /pix/charges", () => {
   test("401 → 500 unauthorized", async () => {
     const { stub, paywall } = setup()

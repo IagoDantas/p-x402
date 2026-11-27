@@ -238,7 +238,11 @@ export function createPaywall(config: PaywallConfig): Paywall {
     return url.href
   }
 
-  /** POST JSON to the facilitator. Transport errors, timeouts and non-JSON bodies → `{ok:false}`. */
+  /**
+   * POST JSON to the facilitator. Transport errors, timeouts and redirects → `{ok:false}` (a
+   * redirect is never followed: it would carry the merchant token elsewhere). Any other HTTP
+   * answer → `{ok:true}`, with `body` undefined when it is empty or not JSON.
+   */
   async function post(
     path: string,
     body: unknown,
@@ -263,8 +267,13 @@ export function createPaywall(config: PaywallConfig): Paywall {
           },
           body: JSON.stringify(body),
           signal: controller.signal,
+          redirect: "manual",
         }),
       )
+      if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+        await response.body?.cancel().catch(() => undefined)
+        return { ok: false }
+      }
       const text = await response.text()
       let parsed: unknown
       try {
