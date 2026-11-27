@@ -50,8 +50,9 @@ export interface RetryOptions {
   maxDelayMs?: number
   factor?: number
   /**
-   * Cap on how long a paid request keeps retrying settlement_pending, on top of the charge's
-   * expiresAt (which the server sets). Default 600000 (10 min).
+   * How long a paid request keeps retrying settlement_pending, counted from the first paid
+   * attempt. It does not stop at the charge's expiresAt: a paid charge stays consumable for 24 h,
+   * and the server answers charge_expired once an unpaid one has expired. Default 600000 (10 min).
    */
   maxWaitMs?: number
 }

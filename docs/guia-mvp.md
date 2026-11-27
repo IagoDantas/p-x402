@@ -86,7 +86,7 @@ Proteções extras, que vieram da revisão adversária:
 - **Mesma cobrança em várias requisições simultâneas:** uma trava por cobrança faz o handler rodar uma vez só. As outras recebem `402 settlement_pending`.
 - **Proteções do cliente:**
   - não paga se a resposta veio de um redirecionamento, e nunca segue um redirecionamento depois de pagar (o `PAYMENT-SIGNATURE` não vai para outro domínio);
-  - não espera um `settlement_pending` por mais de 10 minutos (`retry.maxWaitMs`), mesmo que o vendedor mande um `expiresAt` ou `Retry-After` maior;
+  - depois de pagar, continua tentando enquanto a resposta for `settlement_pending`, mesmo depois do `expiresAt` (uma cobrança paga vale por 24 h, e uma não paga vira `charge_expired`), mas nunca por mais de 10 minutos (`retry.maxWaitMs`), mesmo que o vendedor mande um `Retry-After` maior;
   - não paga se a URL do recurso é de outro domínio;
   - não paga se o valor dentro do BR Code é diferente do anunciado;
   - não paga um BR Code ambíguo, que cada banco poderia ler de um jeito: com tag repetida, caractere fora do ASCII, template de conta que não se lê direito, ou sem exatamente um template Pix;

@@ -44,24 +44,22 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
   const now = options.now ?? Date.now
   let spent = 0
 
+  /**
+   * Sends the paid request until the server stops answering settlement_pending. With a Pix
+   * signature it keeps trying for up to maxWaitMs, even past expiresAt: a paid charge stays
+   * consumable for 24 h, and the facilitator answers a definitive charge_expired once an unpaid
+   * one has expired, so settlement_pending after expiry is a transient answer (PSP blip, another
+   * request holding the charge). Any other signature is sent once.
+   */
   async function retryLoop(
     request: Request,
     paymentSignature: string,
     chargeId: string,
-    deadline: number,
+    isPix: boolean,
   ): Promise<Response> {
     const details = { chargeId, paymentSignature }
-    // The server sets expiresAt and Retry-After; never wait on them longer than maxWaitMs.
-    const expiry = Number.isNaN(deadline) ? Number.NEGATIVE_INFINITY : deadline
-    const cap = now() + maxWaitMs
-    const until = Math.min(expiry, cap)
-    // What ends the wait: the charge's expiry, our own cap, or not knowing the expiry at all.
-    const timeoutReason =
-      expiry === Number.NEGATIVE_INFINITY
-        ? "unknown_expiry"
-        : expiry <= cap
-          ? "expired"
-          : "max_wait"
+    const until = isPix ? now() + maxWaitMs : Number.NEGATIVE_INFINITY
+    const timeoutReason = isPix ? "max_wait" : "unknown_expiry"
     let backoff = initialDelayMs
     for (;;) {
       // The signature is a bearer proof for a paid charge: never let a redirect carry it elsewhere.
@@ -83,15 +81,14 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
       const reason = header === null ? undefined : readErrorReason(header)
       if (reason === "settlement_pending") {
         if (now() > until) {
-          const message =
-            timeoutReason === "expired"
-              ? "charge expired before settlement"
-              : "gave up waiting for settlement"
-          throw new Px402Error("payment_timeout", message, { ...details, reason: timeoutReason })
+          throw new Px402Error("payment_timeout", "gave up waiting for settlement", {
+            ...details,
+            reason: timeoutReason,
+          })
         }
         const wait = Math.max(retryAfterMs(response, now()), backoff)
         backoff = Math.min(backoff * factor, maxDelayMs)
-        // Never sleep much past the deadline: one last attempt right after it.
+        // Never sleep much past the cap: one last attempt right after it.
         await sleep(Math.min(wait, Math.max(0, until - now()) + 1))
         continue
       }
@@ -116,13 +113,13 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
 
   async function resume(request: Request, paymentSignature: string): Promise<Response> {
     let chargeId = ""
-    let deadline = Number.NEGATIVE_INFINITY // unknown expiry: try once
+    let isPix = false // not a p-x402 Pix signature: try once
     let resourceUrl: string | undefined
     try {
       const parsed = PixPaymentPayloadSchema.safeParse(decodePaymentPayload(paymentSignature))
       if (parsed.success) {
         chargeId = parsed.data.payload.chargeId
-        deadline = Date.parse(parsed.data.accepted.extra.expiresAt)
+        isPix = true
         resourceUrl = parsed.data.accepted.extra.resourceUrl
       }
     } catch {
@@ -138,7 +135,7 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
       })
     }
     checkAllowedOrigin(requestUrl)
-    return retryLoop(request, paymentSignature, chargeId, deadline)
+    return retryLoop(request, paymentSignature, chargeId, isPix)
   }
 
   async function paidFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -224,7 +221,7 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
       // a logging hook must not lose a paid request
     }
 
-    return retryLoop(request, paymentSignature, extra.chargeId, Date.parse(extra.expiresAt))
+    return retryLoop(request, paymentSignature, extra.chargeId, true)
   }
 
   Object.defineProperty(paidFetch, "spent", { get: () => spent, enumerable: true })

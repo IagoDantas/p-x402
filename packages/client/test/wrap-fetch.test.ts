@@ -183,7 +183,7 @@ describe("wrapFetch", () => {
     expect(clock.sleeps).toEqual([3000])
   })
 
-  test("pending past expiresAt -> payment_timeout with details", async () => {
+  test("pending keeps polling past expiresAt until maxWaitMs, then payment_timeout with details", async () => {
     const server = scriptedServer((_attempt, _request, seen) =>
       seen.signature === null
         ? challenge(paymentRequired([pixRequirements()]))
@@ -196,10 +196,11 @@ describe("wrapFetch", () => {
     expect(error.code).toBe("payment_timeout")
     expect(error.details?.chargeId).toBe("pix_char_mock_0001")
     expect(error.details?.paymentSignature).toBe(server.seen[1]?.signature ?? "missing")
-    expect(error.details?.reason).toBe("expired")
-    expect(error.message).toBe("charge expired before settlement")
-    expect(clock.t).toBeGreaterThan(Date.parse(EXPIRES_AT))
-    expect(clock.t - Date.parse(EXPIRES_AT)).toBeLessThan(10)
+    expect(error.details?.reason).toBe("max_wait")
+    expect(error.message).toBe("gave up waiting for settlement")
+    // A paid charge stays consumable for 24 h: expiresAt (5 min) is not where the client stops.
+    expect(clock.t - START).toBeGreaterThan(600_000)
+    expect(clock.t - START).toBeLessThan(600_010)
     expect(charges).toHaveLength(1)
     expect(paid.spent).toBe(500)
   })
@@ -550,18 +551,35 @@ describe("wrapFetch", () => {
     expect(paid.spent).toBe(0)
     expect(server.seen.map((s) => s.signature)).toEqual([signature, signature])
 
-    // past expiry: tried once, then timeout
-    const late = scriptedServer(() => refused("settlement_pending", "pix_char_mock_0001"))
+    // past expiry: a paid charge is still consumable (24 h grace), so a pending answer is
+    // transient and resume keeps polling
+    const late = scriptedServer((attempt) =>
+      attempt === 0 ? refused("settlement_pending", "pix_char_mock_0001", "2") : new Response("ok"),
+    )
     const lateClock = fakeClock(Date.parse(EXPIRES_AT) + 60_000)
+    const lateResponse = await wrapFetch(late.fetch, {
+      payer,
+      now: lateClock.now,
+      sleep: lateClock.sleep,
+    })(RESOURCE, { headers: { "PAYMENT-SIGNATURE": signature } })
+    expect(lateResponse.status).toBe(200)
+    expect(late.seen.map((s) => s.signature)).toEqual([signature, signature])
+    expect(lateClock.sleeps).toEqual([2000])
+
+    // still pending after maxWaitMs: timeout with the signature to resume later
+    const stuck = scriptedServer(() => refused("settlement_pending", "pix_char_mock_0001"))
+    const stuckClock = fakeClock(Date.parse(EXPIRES_AT) + 60_000)
     const error = await caught(
-      wrapFetch(late.fetch, { payer, now: lateClock.now, sleep: lateClock.sleep })(RESOURCE, {
-        headers: { "PAYMENT-SIGNATURE": signature },
-      }),
+      wrapFetch(stuck.fetch, {
+        payer,
+        now: stuckClock.now,
+        sleep: stuckClock.sleep,
+        retry: { maxWaitMs: 5_000 },
+      })(RESOURCE, { headers: { "PAYMENT-SIGNATURE": signature } }),
     )
     expect(error.code).toBe("payment_timeout")
     expect(error.details?.paymentSignature).toBe(signature)
-    expect(late.seen).toHaveLength(1)
-    expect(lateClock.sleeps).toEqual([])
+    expect(error.details?.reason).toBe("max_wait")
     expect(charges).toHaveLength(0)
 
     // other refusal on resume -> typed error, still no payment
@@ -667,7 +685,7 @@ describe("wrapFetch", () => {
     expect(clock.sleeps).toEqual([500, 1000, 1500, 1500])
   })
 
-  test("a huge Retry-After never sleeps far past expiresAt", async () => {
+  test("a huge Retry-After never sleeps far past maxWaitMs", async () => {
     const server = scriptedServer((_attempt, _request, seen) =>
       seen.signature === null
         ? challenge(paymentRequired([pixRequirements()]))
@@ -681,8 +699,8 @@ describe("wrapFetch", () => {
     })
     const error = await caught(paid(RESOURCE))
     expect(error.code).toBe("payment_timeout")
-    // one capped sleep to just past the deadline, one last try, then timeout
-    expect(clock.sleeps).toEqual([Date.parse(EXPIRES_AT) - START + 1])
+    // one capped sleep to just past the cap, one last try, then timeout
+    expect(clock.sleeps).toEqual([600_000 + 1])
     expect(server.seen).toHaveLength(3)
   })
 
