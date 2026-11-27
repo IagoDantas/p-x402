@@ -766,6 +766,13 @@ for (const [storeName, makeStore] of backends) {
           "requirements_mismatch",
         ],
         [
+          "accepted names another charge",
+          (b) => {
+            b.paymentPayload.accepted.extra.chargeId = "pix_char_mock_0002"
+          },
+          "requirements_mismatch",
+        ],
+        [
           "unknown charge",
           (b) => {
             b.paymentPayload.accepted.extra.chargeId = "pix_char_mock_9999"
@@ -995,6 +1002,36 @@ for (const [storeName, makeStore] of backends) {
       expect(mock.calls.getCharge).toBe(calls)
       const record = await f.store.get(late.extra.chargeId)
       expect(record?.paidAt).toBeNull()
+      expect(record?.consumedAt).toBeNull()
+    })
+
+    test("PSP PAID without paidAt: a webhook-stored paidAt starts the grace", async () => {
+      const mock = createMockPixProvider({ now: () => T0 })
+      const f = setup(makeStore, { provider: withPaidAt(mock, undefined) })
+      const early = await f.charge()
+      const late = await f.charge()
+      f.advance(10_000)
+      for (const req of [early, late]) {
+        const id = req.extra.chargeId
+        await mock.simulatePayment(id)
+        const res = await f.fetch(await mock.webhookRequest("paid", id))
+        expect(await res.json()).toEqual({ ok: true, applied: true })
+        expect((await f.store.get(id))?.paidAt).toBe(T0 + 10_000)
+      }
+      f.advance(86_400_000 - 1)
+      expect((await f.verify(f.body(late))).json).toEqual({ isValid: true })
+      expect((await f.settle(f.body(early))).json.success).toBe(true)
+      f.advance(2)
+      // Still before expiresAt + grace, so runChecks asks the PSP, then refuses on paidAt + grace.
+      expect(f.now()).toBeLessThan(Date.parse(late.extra.expiresAt) + 86_400_000)
+      const calls = mock.calls.getCharge
+      expect((await f.verify(f.body(late))).json.invalidReason).toBe("charge_expired")
+      const afterVerify = mock.calls.getCharge
+      expect(afterVerify).toBeGreaterThan(calls)
+      expect((await f.settle(f.body(late))).json.errorReason).toBe("charge_expired")
+      expect(mock.calls.getCharge).toBeGreaterThan(afterVerify)
+      const record = await f.store.get(late.extra.chargeId)
+      expect(record?.paidAt).toBe(T0 + 10_000)
       expect(record?.consumedAt).toBeNull()
     })
 

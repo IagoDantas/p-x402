@@ -270,21 +270,31 @@ describe("rate limits", () => {
     expect(response(c).status).toBe(402)
   })
 
-  test("facilitator 429 on /pix/charges passes through with Retry-After", async () => {
-    const { stub, paywall } = setup()
-    stub.reply(
-      "/pix/charges",
-      new Response(JSON.stringify({ error: "rate_limited" }), {
-        status: 429,
-        headers: { "retry-after": "7" },
-      }),
-    )
-    const res = response(
-      await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }),
-    )
-    expect(res.status).toBe(429)
-    expect(res.headers.get("Retry-After")).toBe("7")
-  })
+  test.each([
+    ["7", "7"],
+    [undefined, "1"],
+    ["soon", "1"],
+    ["Wed, 21 Oct 2026 07:28:00 GMT", "1"],
+    ["-3", "1"],
+    ["1.5", "1"],
+  ])(
+    "facilitator 429 on /pix/charges with retry-after %p → 429 with Retry-After %p",
+    async (given, expected) => {
+      const { stub, paywall } = setup()
+      stub.reply(
+        "/pix/charges",
+        new Response(JSON.stringify({ error: "rate_limited" }), {
+          status: 429,
+          headers: given === undefined ? {} : { "retry-after": given },
+        }),
+      )
+      const res = response(
+        await paywall.handle(new Request(URL_RELATORIO), route, { clientIp: "1.2.3.4" }),
+      )
+      expect(res.status).toBe(429)
+      expect(res.headers.get("Retry-After")).toBe(expected)
+    },
+  )
 })
 
 describe("facilitator errors on /pix/charges", () => {
