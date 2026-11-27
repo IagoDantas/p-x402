@@ -24,6 +24,7 @@ O `p-x402` implementa o protocolo x402 (v2) com o Pix como meio de pagamento. Um
   - [Uso](#uso)
   - [Princípios](#princípios)
 - [SDKs em várias linguagens](#sdks-em-várias-linguagens)
+- [SDK Python](#sdk-python)
 - [Layout do repositório](#layout-do-repositório)
 - [Como executar](#como-executar)
 - [Schemes](#schemes)
@@ -393,8 +394,8 @@ pix = Px402(facilitator="https://facilitator.exemplo.com", token=os.environ["PX4
 @app.get("/relatorio", dependencies=[Depends(pix.paywall(amount=500))])
 def relatorio(): ...
 
-# cliente: transport do httpx
-client = httpx.Client(transport=px402.Transport(payer=terminal_payer(), max_per_request=1000))
+# cliente: transport do httpx (já existe, veja SDK Python abaixo)
+client = httpx.Client(transport=px402.Px402Transport(px402.TerminalPayer(), policy=px402.SpendingPolicy(max_per_request=1000)))
 ```
 
 **Go:**
@@ -427,6 +428,25 @@ Cada SDK tem a própria versão semver e declara duas compatibilidades: a versã
 
 ---
 
+## SDK Python
+
+O cliente Python está em [`sdks/python`](sdks/python/README.md) (pacote `p-x402`, import `px402`, Python 3.9+, só depende do `httpx`). Ele faz o mesmo que o `wrapFetch`: recebe o 402, aplica a policy de gasto (ligada por padrão: R$ 10,00 por requisição e R$ 50,00 no total), chama o pagador e refaz a requisição com `PAYMENT-SIGNATURE`. Tem transport síncrono e assíncrono do `httpx`, o `SimulatePayer` para desenvolvimento e o `TerminalPayer`, que mostra o Pix copia e cola e espera a pessoa pagar. O lado do servidor em Python ainda não existe.
+
+```python
+import px402
+
+with px402.Px402Client(px402.SimulatePayer("http://localhost:4020")) as client:
+    print(client.get("http://localhost:4021/relatorio").json())
+```
+
+Os testes rodam todos os casos de [`spec/test-vectors/`](spec/test-vectors/README.md):
+
+```bash
+bun run test:python
+```
+
+---
+
 ## Layout do repositório
 
 Monorepo com workspaces do Bun. As bibliotecas (`packages/*`) usam só padrões web; os apps podem usar APIs do Bun.
@@ -442,6 +462,8 @@ p-x402/
 │   ├── facilitator/   app Hono: /pix/charges, /verify, /settle, /supported, /webhooks/pix; stores memória e bun:sqlite
 │   ├── demo-server/   API de exemplo com GET /relatorio a R$ 5,00
 │   └── demo-client/   comprador de exemplo e a demo tudo-em-um (bun run demo:local)
+├── sdks/
+│   └── python/        cliente Python (httpx, policy de gasto, SimulatePayer, TerminalPayer)
 ├── spec/
 │   └── test-vectors/  vetores de teste do protocolo para SDKs em outras linguagens (bun run vectors)
 └── docs/
