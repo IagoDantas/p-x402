@@ -58,7 +58,7 @@ export function pixPaywall(
         result.release()
         return
       }
-      // finalize releases the chargeId lock itself, including when it skips settle (status >= 400).
+      // finalize releases the chargeId lock itself, including when it skips settle (non-2xx).
       const out = await result.finalize(c.res)
       if (out !== c.res) {
         c.res = undefined

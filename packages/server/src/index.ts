@@ -522,8 +522,9 @@ export function createPaywall(config: PaywallConfig): Paywall {
       release: lock.release,
       async finalize(response) {
         try {
-          // Handler failed: no settle, the paid charge stays unused.
-          if (response.status >= 400) return response
+          // Only a 2xx delivers the resource. On an error, and on a redirect (the client never
+          // follows one with a payment signature), there is no settle: the paid charge stays unused.
+          if (response.status < 200 || response.status >= 300) return response
           lock.touch()
           const settled = await verifyOrSettle(
             "/settle",

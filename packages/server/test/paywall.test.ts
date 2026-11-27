@@ -360,14 +360,17 @@ describe("paid retry", () => {
     expect(stub.callsTo("/pix/charges")).toHaveLength(0)
   })
 
-  test("handler 500 → no /settle, response passed through", async () => {
-    const { stub, paywall } = setup()
-    const result = paid(await paywall.handle(paidRequest(), route))
-    const failed = new Response("boom", { status: 500 })
-    const out = await result.finalize(failed)
-    expect(out).toBe(failed)
-    expect(stub.callsTo("/settle")).toHaveLength(0)
-  })
+  test.each([500, 404, 302, 303])(
+    "handler %i → no /settle, response passed through",
+    async (status) => {
+      const { stub, paywall } = setup()
+      const result = paid(await paywall.handle(paidRequest(), route))
+      const failed = new Response(null, { status, headers: { location: "/elsewhere" } })
+      const out = await result.finalize(failed)
+      expect(out).toBe(failed)
+      expect(stub.callsTo("/settle")).toHaveLength(0)
+    },
+  )
 
   test("settle says charge_already_consumed → 402, handler body discarded", async () => {
     const { stub, paywall } = setup()
