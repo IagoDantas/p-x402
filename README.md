@@ -276,7 +276,7 @@ O núcleo do servidor não conhece framework. Os adapters são finos por cima di
 
 ```ts
 const result = await paywall.handle(request, { amount: "500" }, { clientIp })
-if (result.type === "response") return result.response // 402, 429, 400 ou 502 pronto
+if (result.type === "response") return result.response // 402, 400, 414, 429, 500 ou 502 pronto
 // result.type === "paid" → executa o handler e chama result.finalize(response):
 // se o handler respondeu sem erro, ele chama /settle e inclui o PAYMENT-RESPONSE
 ```
