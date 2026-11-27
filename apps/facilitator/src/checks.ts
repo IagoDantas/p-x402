@@ -175,6 +175,11 @@ export async function runChecks(ctx: CheckContext, body: unknown): Promise<Check
   if (record.consumedAt !== null) return fail("charge_already_consumed", chargeId, { record })
   if (record.refundedAt !== null) return fail("charge_refunded", chargeId, { record })
   if (record.disputedAt !== null) return fail("charge_disputed", chargeId, { record })
+  // Past expiresAt + grace no PSP answer can make the charge payable (see judgePsp): refuse without
+  // asking, so replaying an old signature cannot make us call the PSP.
+  if (ctx.now() > Date.parse(record.expiresAt) + ctx.paidGraceMs) {
+    return fail("charge_expired", chargeId, { record })
+  }
 
   // The PSP is the truth.
   let observation: PspObservation
