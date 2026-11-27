@@ -341,6 +341,32 @@ describe("AbacatePay provider", () => {
       return provider(stub(() => json({})).fetch, { webhookSecret: SECRET })
     }
 
+    test("the size limit counts UTF-8 bytes, not characters, when no content-length is sent", async () => {
+      // 40 000 "é" = 40 000 characters but 80 000 bytes.
+      const raw = JSON.stringify({ ...envelope("transparent.completed"), pad: "é".repeat(40_000) })
+      const bytes = new TextEncoder().encode(raw)
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes)
+          controller.close()
+        },
+      })
+      const request = new Request("http://facilitator.local/webhooks/pix", {
+        method: "POST",
+        headers: {
+          "X-Webhook-Secret": SECRET,
+          "X-Webhook-Signature": await signAbacatePayWebhook(raw),
+        },
+        body,
+      })
+      expect(request.headers.get("content-length")).toBeNull()
+      const error = await withSecret()
+        .parseWebhook?.(request)
+        .catch((e: unknown) => e)
+      expect(isPx402Error(error) && error.code).toBe("invalid_webhook_payload")
+      expect(String((error as Error).message)).toContain("too large")
+    })
+
     test("no parseWebhook without a secret", () => {
       const f = stub(() => json({})).fetch
       for (const webhookSecret of [undefined, "", "   "]) {

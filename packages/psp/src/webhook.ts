@@ -27,7 +27,8 @@ export async function signAbacatePayWebhook(rawBody: string): Promise<string> {
   for (const byte of mac) binary += String.fromCharCode(byte)
   return btoa(binary)
 }
-/** Webhook bodies above this size are refused unread. */
+
+/** Webhook bodies above this size (in UTF-8 bytes) are refused. */
 export const MAX_WEBHOOK_BYTES = 64 * 1024
 
 const EVENT_KINDS: Record<string, PixWebhookKind> = {
@@ -36,12 +37,13 @@ const EVENT_KINDS: Record<string, PixWebhookKind> = {
   "transparent.refunded": "refunded",
 }
 
-/** AbacatePay v2 envelope. Only the fields p-x402 reads are declared; the rest (customer, payerInformation) is dropped. */
+/**
+ * AbacatePay v2 envelope. Only the fields p-x402 reads are declared; zod strips the rest
+ * (customer, payerInformation), so payer data never leaves this function.
+ */
 const EnvelopeSchema = z.object({
   id: z.string().min(1).max(256),
   event: z.string().min(1).max(128),
-  apiVersion: z.union([z.number(), z.string()]).optional(),
-  devMode: z.boolean().optional(),
   data: z
     .object({
       transparent: z.object({ id: z.string().min(1).max(128) }).optional(),
@@ -69,7 +71,7 @@ export async function parseAbacatePayWebhook(
     throw new Px402Error("invalid_webhook_payload", "webhook body is too large")
   }
   const text = await request.text()
-  if (text.length > MAX_WEBHOOK_BYTES) {
+  if (textEncoder.encode(text).byteLength > MAX_WEBHOOK_BYTES) {
     throw new Px402Error("invalid_webhook_payload", "webhook body is too large")
   }
   const signature = request.headers.get(WEBHOOK_SIGNATURE_HEADER) ?? ""
