@@ -122,7 +122,7 @@ Os motivos de falha mais comuns são estes:
 bun test
 ```
 
-São 307 testes em 13 arquivos e rodam em menos de meio segundo. Para rodar um arquivo só, ou só os testes cujo nome contém um texto:
+São mais de 400 testes em 13 arquivos e rodam em menos de um segundo. Para rodar um arquivo só, ou só os testes cujo nome contém um texto:
 
 ```bash
 bun test apps/facilitator
@@ -153,21 +153,21 @@ bun run lint
 
 ### O que cada arquivo cobre
 
-| Arquivo | Testes | Cobre |
-|---|---:|---|
-| `packages/core/test/codec.test.ts` | 8 | Ida e volta dos três headers, acentos, headers inválidos ou grandes demais |
-| `packages/core/test/brcode-matching.test.ts` | 6 | Leitura do BR Code (valor, CRC) e comparação entre requisitos aceitos e exigidos |
-| `packages/core/test/util.test.ts` | 2 | Limitador de taxa e comparação de segredos em tempo constante |
-| `packages/psp/test/mock.test.ts` | 7 | Ciclo de vida do PSP falso, webhooks e BR Code válido |
-| `packages/psp/test/abacatepay.test.ts` | 31 | Chamadas HTTP do adapter, mapeamento de status, erros, timeout, chave nunca vazada, webhook com segredo certo, errado ou vazio |
-| `apps/facilitator/test/store.test.ts` | 20 | Os dois armazenamentos (memória e SQLite): consumo atômico, deduplicação de webhooks, limpeza |
-| `apps/facilitator/test/app.test.ts` | 128 | Todas as rotas e regras: auth, limite por loja, pagamento reutilizado, valor/recebedor/recurso trocados, expirada, paga dentro de 24 h, disputa, estorno, corrida entre duas liquidações, webhook duplicado ou com segredo errado, PSP fora do ar |
-| `packages/server/test/paywall.test.ts` | 47 | O middleware sem framework: limite por IP, ordem verify → handler → settle, `settlement_pending` com a mesma cobrança, handler com erro não liquida, repetição do `/settle`, trava por cobrança, facilitator fora do ar |
-| `packages/server/test/hono.test.ts` | 13 | O adapter Hono: IP do cliente, handler que lança exceção, `HEAD` |
-| `packages/server/test/ip.test.ts` | 3 | Como o IP vira chave do limitador (IPv6 por /64) |
-| `packages/client/test/wrap-fetch.test.ts` | 26 | O `fetch` que paga: limites de gasto, BR Code, redirecionamento, backoff, timeout, retomar pagamento, chamadas simultâneas sem gastar demais |
-| `packages/client/test/payers.test.ts` | 4 | O `simulatePayer` |
-| `apps/demo-client/test/round-trip.test.ts` | 12 | **Ponta a ponta** com as peças reais e o PSP falso: compra feliz, pagamento atrasado, handler com erro e retomada, pagamento reutilizado, três requisições simultâneas, expiração, limite do cliente, resposta do `/settle` perdida, TTL diferente de 300 s |
+| Arquivo | Cobre |
+|---|---|
+| `packages/core/test/codec.test.ts` | Ida e volta dos três headers, acentos, headers inválidos ou grandes demais |
+| `packages/core/test/brcode-matching.test.ts` | Leitura do BR Code (valor, CRC, código dinâmico, códigos ambíguos recusados) e comparação entre requisitos aceitos e exigidos |
+| `packages/core/test/util.test.ts` | Limitador de taxa e comparação de segredos em tempo constante |
+| `packages/psp/test/mock.test.ts` | Ciclo de vida do PSP falso, webhooks e BR Code válido |
+| `packages/psp/test/abacatepay.test.ts` | Chamadas HTTP do adapter, mapeamento de status, erros, timeout, chave nunca vazada, webhook com segredo ou assinatura errados, limite em bytes, eventos sem cobrança, dados do pagador descartados |
+| `apps/facilitator/test/store.test.ts` | Os dois armazenamentos (memória e SQLite, também num arquivo de verdade): consumo atômico, cobrança em disputa ou estornada nunca consumida, deduplicação de webhooks, limpeza |
+| `apps/facilitator/test/app.test.ts` | Todas as rotas e regras: auth, configuração de lojas, limite por loja, pagamento reutilizado, valor/recebedor/recurso trocados, expirada (sem chamar o PSP), paga dentro de 24 h (com ou sem `paidAt` do PSP), CANCELLED/FAILED, disputa, estorno (inclusive no meio do `/settle`), corrida entre duas liquidações, webhook duplicado, com segredo errado ou que falha, PSP fora do ar ou devolvendo cobrança inválida |
+| `packages/server/test/paywall.test.ts` | O middleware sem framework: configuração, limite por IP, ordem verify → handler → settle, `settlement_pending` com a mesma cobrança, só liquida depois de 2xx, repetição do `/settle`, trava por cobrança (inclusive trava velha e limpeza), facilitator fora do ar ou respondendo lixo |
+| `packages/server/test/hono.test.ts` | O adapter Hono: IP do cliente, rota inválida recusada na montagem, handler que lança exceção, `HEAD` |
+| `packages/server/test/ip.test.ts` | Como o IP vira chave do limitador (IPv6 por /64, IPv4 mapeado) |
+| `packages/client/test/wrap-fetch.test.ts` | O `fetch` que paga: limites de gasto (inclusive no limite exato), BR Code, código dinâmico, redirecionamento antes e depois de pagar, backoff, `Retry-After` em data, tempo máximo de espera, retomar pagamento, chamadas simultâneas sem gastar demais |
+| `packages/client/test/payers.test.ts` | O `simulatePayer` |
+| `apps/demo-client/test/round-trip.test.ts` | **Ponta a ponta** com as peças reais e o PSP falso: compra feliz, pagamento atrasado, handler com erro e retomada, pagamento reutilizado, três requisições simultâneas, expiração, limite do cliente, resposta do `/settle` perdida, TTL diferente de 300 s |
 
 Para entender o sistema lendo testes, comece pelo `round-trip.test.ts`. Ele conta a história inteira em poucos casos.
 
