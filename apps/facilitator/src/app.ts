@@ -11,6 +11,7 @@ import {
   PIX_PAYMENT_FLOW,
   PIX_SCHEME,
   PixPaymentRequirementsSchema,
+  Px402Error,
   type Px402ErrorCode,
   type SettlementResponse,
   type SupportedResponse,
@@ -59,15 +60,19 @@ const BEARER = /^Bearer[ \t]+(\S+)[ \t]*$/i
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{1,128}$/
 
 function validateMerchants(merchants: FacilitatorMerchant[]) {
-  if (merchants.length === 0) throw new Error("facilitator: at least one merchant is required")
+  if (merchants.length === 0)
+    throw new Px402Error("invalid_request", "facilitator: at least one merchant is required")
   const ids = new Set<string>()
   const tokens = new Set<string>()
   for (const m of merchants) {
     if (!m.id || !m.token || !m.payTo) {
-      throw new Error("facilitator: merchant id, token and payTo must be non-empty")
+      throw new Px402Error(
+        "invalid_request",
+        "facilitator: merchant id, token and payTo must be non-empty",
+      )
     }
     if (ids.has(m.id) || tokens.has(m.token)) {
-      throw new Error("facilitator: merchant ids and tokens must be unique")
+      throw new Px402Error("invalid_request", "facilitator: merchant ids and tokens must be unique")
     }
     ids.add(m.id)
     tokens.add(m.token)

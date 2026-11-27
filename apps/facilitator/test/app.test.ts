@@ -180,6 +180,7 @@ describe("createFacilitator merchant validation", () => {
       const make = () =>
         createFacilitator({ provider: createMockPixProvider(), store: memoryStore(), merchants })
       expect(make).toThrow(/^facilitator: /)
+      expect(make).toThrow(Px402Error)
     })
   }
 
