@@ -96,6 +96,25 @@ describe("BR Code", () => {
     ).toBe(true)
   })
 
+  test("the Pix GUI is matched case-insensitively", () => {
+    for (const gui of ["BR.GOV.BCB.PIX", "Br.Gov.Bcb.Pix"]) {
+      const code = encodeEmv([
+        { id: "00", value: "01" },
+        {
+          id: "26",
+          value: encodeTlv([
+            { id: "00", value: gui },
+            { id: "01", value: "abcde" },
+          ]),
+        },
+        { id: "54", value: "5.00" },
+      ])
+      const info = parseBrCode(code)
+      expect(info?.crcValid).toBe(true)
+      expect(info?.amount).toBe("500")
+    }
+  })
+
   test("encodeTlv writes id, two-digit length and value", () => {
     expect(
       encodeTlv([
@@ -111,6 +130,11 @@ describe("BR Code", () => {
     expect(brlToCentavos("12")).toBe("1200")
     expect(brlToCentavos("1,00")).toBeUndefined()
     expect(brlToCentavos("-1.00")).toBeUndefined()
+    expect(brlToCentavos("5.001")).toBeUndefined()
+    expect(brlToCentavos(".50")).toBeUndefined()
+    expect(brlToCentavos("5.")).toBeUndefined()
+    expect(brlToCentavos("1".repeat(14))).toBeUndefined()
+    expect(brlToCentavos(`${"9".repeat(13)}.99`)).toBe(`${"9".repeat(15)}`)
   })
 })
 
