@@ -17,6 +17,7 @@ VECTOR_FILES = (
     "requirement-matching.json",
     "client-transcripts.json",
     "error-codes.json",
+    "paywall-transcripts.json",
 )
 
 
