@@ -21,6 +21,8 @@ import type { PaidFetch, WrapFetchOptions } from "./types"
 
 const DEFAULT_MAX_PER_REQUEST = 1000
 const DEFAULT_MAX_TOTAL = 5000
+/** Longest a paid request keeps polling settlement_pending, whatever expiresAt says. */
+const DEFAULT_MAX_WAIT_MS = 10 * 60_000
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -37,6 +39,7 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
   const initialDelayMs = options.retry?.initialDelayMs ?? 500
   const maxDelayMs = options.retry?.maxDelayMs ?? 5000
   const factor = options.retry?.factor ?? 2
+  const maxWaitMs = options.retry?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS
   const sleep = options.sleep ?? realSleep
   const now = options.now ?? Date.now
   let spent = 0
@@ -48,24 +51,38 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
     deadline: number,
   ): Promise<Response> {
     const details = { chargeId, paymentSignature }
+    // The server sets expiresAt and Retry-After; never wait on them longer than maxWaitMs.
+    const until = Math.min(
+      Number.isNaN(deadline) ? Number.NEGATIVE_INFINITY : deadline,
+      now() + maxWaitMs,
+    )
     let backoff = initialDelayMs
     for (;;) {
-      const attempt = request.clone()
+      // The signature is a bearer proof for a paid charge: never let a redirect carry it elsewhere.
+      const attempt = new Request(request.clone(), { redirect: "manual" })
       attempt.headers.set(HEADER_PAYMENT_SIGNATURE, paymentSignature)
       const response = await fetchImpl(attempt)
+      if (isRedirect(response, new URL(request.url))) {
+        discardBody(response)
+        throw new Px402Error("policy_exceeded", "paid request was redirected", {
+          ...details,
+          reason: "redirected",
+          responseUrl: response.url,
+        })
+      }
       if (response.status !== 402) return response
       discardBody(response)
 
       const header = response.headers.get(HEADER_PAYMENT_RESPONSE)
       const reason = header === null ? undefined : readErrorReason(header)
       if (reason === "settlement_pending") {
-        if (now() > deadline) {
+        if (now() > until) {
           throw new Px402Error("payment_timeout", "charge expired before settlement", details)
         }
         const wait = Math.max(retryAfterMs(response, now()), backoff)
         backoff = Math.min(backoff * factor, maxDelayMs)
         // Never sleep much past the deadline: one last attempt right after it.
-        await sleep(Math.min(wait, Math.max(0, deadline - now()) + 1))
+        await sleep(Math.min(wait, Math.max(0, until - now()) + 1))
         continue
       }
       if (reason !== undefined && isPx402ErrorCode(reason)) {
@@ -219,17 +236,21 @@ function checkResource(
  * to pay it, since its resource checks would run against the wrong origin.
  */
 function checkNotRedirected(response: Response, requestUrl: URL): void {
-  const responseOrigin =
-    response.url !== "" && URL.canParse(response.url) ? new URL(response.url).origin : undefined
-  const foreign =
-    response.url !== "" && (responseOrigin === undefined || responseOrigin !== requestUrl.origin)
-  if (response.redirected || foreign) {
+  if (isRedirect(response, requestUrl)) {
     throw new Px402Error("policy_exceeded", "402 came from a redirected response", {
       reason: "redirected",
       origin: requestUrl.origin,
       responseUrl: response.url,
     })
   }
+}
+
+/** A redirect (followed, or held back by redirect: "manual") or an answer from another origin. */
+function isRedirect(response: Response, requestUrl: URL): boolean {
+  if (response.redirected || response.type === "opaqueredirect") return true
+  if (response.status >= 300 && response.status < 400) return true
+  if (response.url === "") return false
+  return !URL.canParse(response.url) || new URL(response.url).origin !== requestUrl.origin
 }
 
 function originAllowed(url: URL, allowed: string[]): boolean {

@@ -179,6 +179,58 @@ describe("wrapFetch", () => {
     expect(paid.spent).toBe(500)
   })
 
+  test("a server-set expiresAt far ahead is capped by retry.maxWaitMs", async () => {
+    const farAway = "2027-11-25T15:00:00.000Z"
+    const server = scriptedServer((_attempt, _request, seen) =>
+      seen.signature === null
+        ? challenge(paymentRequired([pixRequirements({ extra: { expiresAt: farAway } })]))
+        : refused("settlement_pending", "pix_char_mock_0001", "3600"),
+    )
+    const { payer } = countingPayer()
+    const clock = fakeClock()
+    const paid = wrapFetch(server.fetch, {
+      payer,
+      now: clock.now,
+      sleep: clock.sleep,
+      retry: { maxWaitMs: 30_000 },
+    })
+    const error = await caught(paid(RESOURCE))
+    expect(error.code).toBe("payment_timeout")
+    expect(clock.t - START).toBeGreaterThan(30_000)
+    expect(clock.t - START).toBeLessThan(30_010)
+  })
+
+  test.each([
+    [
+      "followed redirect",
+      () => {
+        const r = new Response("ok", { status: 200 })
+        Object.defineProperty(r, "redirected", { value: true })
+        return r
+      },
+    ],
+    [
+      "held-back redirect",
+      () =>
+        new Response(null, { status: 302, headers: { location: "https://evil.example.net/x" } }),
+    ],
+  ])(
+    "a paid retry that is redirected is refused (%s), signature in details",
+    async (_name, make) => {
+      const server = scriptedServer((_attempt, request, seen) => {
+        if (seen.signature === null) return challenge(paymentRequired([pixRequirements()]))
+        expect(request.redirect).toBe("manual")
+        return make()
+      })
+      const { payer, charges } = countingPayer()
+      const error = await caught(wrapFetch(server.fetch, { payer })(RESOURCE))
+      expect(error.code).toBe("policy_exceeded")
+      expect(error.details?.reason).toBe("redirected")
+      expect(error.details?.paymentSignature).toBe(server.seen[1]?.signature ?? "missing")
+      expect(charges).toHaveLength(1)
+    },
+  )
+
   test("policy refuses over maxPerRequest without paying or retrying", async () => {
     const server = simplePaywall(pixRequirements({ amount: "1500" }))
     const { payer, charges } = countingPayer()

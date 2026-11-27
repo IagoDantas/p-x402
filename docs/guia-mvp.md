@@ -85,7 +85,8 @@ Proteções extras, que vieram da revisão adversária:
 - **Resposta do `/settle` perdida:** o vendedor repete o `/settle` com a mesma `Idempotency-Key`, e o facilitator devolve o mesmo sucesso. Assim uma resposta perdida no meio do caminho não queima um pagamento.
 - **Mesma cobrança em várias requisições simultâneas:** uma trava por cobrança faz o handler rodar uma vez só. As outras recebem `402 settlement_pending`.
 - **Proteções do cliente:**
-  - não paga se a resposta veio de um redirecionamento;
+  - não paga se a resposta veio de um redirecionamento, e nunca segue um redirecionamento depois de pagar (o `PAYMENT-SIGNATURE` não vai para outro domínio);
+  - não espera um `settlement_pending` por mais de 10 minutos (`retry.maxWaitMs`), mesmo que o vendedor mande um `expiresAt` ou `Retry-After` maior;
   - não paga se a URL do recurso é de outro domínio;
   - não paga se o valor dentro do BR Code é diferente do anunciado;
   - não paga um BR Code com tag repetida (cada banco leria um valor diferente);

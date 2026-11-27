@@ -49,6 +49,11 @@ export interface RetryOptions {
   initialDelayMs?: number
   maxDelayMs?: number
   factor?: number
+  /**
+   * Cap on how long a paid request keeps retrying settlement_pending, on top of the charge's
+   * expiresAt (which the server sets). Default 600000 (10 min).
+   */
+  maxWaitMs?: number
 }
 
 export interface WrapFetchOptions {
