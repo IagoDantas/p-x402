@@ -575,6 +575,37 @@ describe("wrapFetch", () => {
     expect(charges).toHaveLength(0)
   })
 
+  test("resume never sends a Pix signature to another origin or outside allowedOrigins", async () => {
+    const first = simplePaywall()
+    const events: PaymentEvent[] = []
+    await wrapFetch(first.fetch, {
+      payer: countingPayer().payer,
+      onPayment: (e) => events.push(e),
+    })(RESOURCE)
+    const signature = events[0]?.paymentSignature ?? ""
+    const headers = { "PAYMENT-SIGNATURE": signature }
+
+    const server = scriptedServer(() => new Response("ok"))
+    const { payer } = countingPayer()
+    const elsewhere = await caught(
+      wrapFetch(server.fetch, { payer })("https://evil.example.net/relatorio", { headers }),
+    )
+    expect(elsewhere.code).toBe("policy_exceeded")
+    expect(elsewhere.details?.reason).toBe("resource_origin_mismatch")
+
+    const blocked = await caught(
+      wrapFetch(server.fetch, { payer, policy: { allowedOrigins: ["other.example.com"] } })(
+        RESOURCE,
+        { headers },
+      ),
+    )
+    expect(blocked.details?.reason).toBe("origin_not_allowed")
+    expect(server.seen).toHaveLength(0)
+
+    const ok = await wrapFetch(server.fetch, { payer })(RESOURCE, { headers })
+    expect(ok.status).toBe(200)
+  })
+
   test("resume with a non-Pix PAYMENT-SIGNATURE sends it once and never pays", async () => {
     const exact = encodePaymentPayload({
       x402Version: 2,

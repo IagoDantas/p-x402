@@ -105,18 +105,39 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
     }
   }
 
+  function checkAllowedOrigin(requestUrl: URL): void {
+    if (allowedOrigins && !originAllowed(requestUrl, allowedOrigins)) {
+      throw new Px402Error("policy_exceeded", "origin not allowed", {
+        reason: "origin_not_allowed",
+        origin: requestUrl.origin,
+      })
+    }
+  }
+
   async function resume(request: Request, paymentSignature: string): Promise<Response> {
     let chargeId = ""
     let deadline = Number.NEGATIVE_INFINITY // unknown expiry: try once
+    let resourceUrl: string | undefined
     try {
       const parsed = PixPaymentPayloadSchema.safeParse(decodePaymentPayload(paymentSignature))
       if (parsed.success) {
         chargeId = parsed.data.payload.chargeId
         deadline = Date.parse(parsed.data.accepted.extra.expiresAt)
+        resourceUrl = parsed.data.accepted.extra.resourceUrl
       }
     } catch {
       // not a p-x402 Pix signature: send it once and interpret the answer
     }
+    // A Pix signature is a bearer proof for its charge: only send it to the origin it was paid for.
+    const requestUrl = new URL(request.url)
+    if (resourceUrl !== undefined && new URL(resourceUrl).origin !== requestUrl.origin) {
+      throw new Px402Error("policy_exceeded", "signature was paid for another origin", {
+        reason: "resource_origin_mismatch",
+        resourceUrl,
+        origin: requestUrl.origin,
+      })
+    }
+    checkAllowedOrigin(requestUrl)
     return retryLoop(request, paymentSignature, chargeId, deadline)
   }
 
@@ -145,12 +166,7 @@ export function wrapFetch(fetchImpl: FetchLike, options: WrapFetchOptions): Paid
 
     // Everything below up to payer.pay is synchronous so concurrent calls cannot overspend.
     checkResource(required, requirements, requestUrl)
-    if (allowedOrigins && !originAllowed(requestUrl, allowedOrigins)) {
-      throw new Px402Error("policy_exceeded", "origin not allowed", {
-        reason: "origin_not_allowed",
-        origin: requestUrl.origin,
-      })
-    }
+    checkAllowedOrigin(requestUrl)
     if (payer.paysBrCode !== false) {
       checkBrCode(extra.brCode, amount, payer.checksDynamicAmount === true)
     }
